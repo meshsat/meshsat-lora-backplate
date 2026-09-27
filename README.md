@@ -40,6 +40,7 @@ flowchart LR
 
 ## What is here
 
+- `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on Meshtastic's EU_868 LongFast settings, and the script that builds it on the phone. Not yet run on the phone.
 - `docs/BACKPLATE.md`: the bridge protocol as verified on the phone (I2C address, how an SPI transfer is carried, how BUSY and DIO1 are read, reset), written from the bench, not from memory.
 - The bridge layer for Meshtastic's Linux daemon, built with the [MeshSat fork of the Meshtastic firmware](https://github.com/meshsat/meshsat-firmware).
 - The daemon configuration, a service unit and an install page for the phone.

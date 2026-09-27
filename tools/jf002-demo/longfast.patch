@@ -1,0 +1,58 @@
+diff --git a/src/PinedioLoraRadio.cpp b/src/PinedioLoraRadio.cpp
+index a71f9da..8907236 100644
+--- a/src/PinedioLoraRadio.cpp
++++ b/src/PinedioLoraRadio.cpp
+@@ -27,7 +27,7 @@ void PinedioLoraRadio::Initialize() {
+ 
+   radio.SetTxParams(22, SX126x::RadioRampTimes_t::RADIO_RAMP_3400_US);
+   radio.SetDioIrqParams(0xffff, 0x0001, 0x0000, 0x0000);
+-  radio.SetRfFrequency(868000000);
++  radio.SetRfFrequency(869525000); // Meshtastic EU_868, one 250 kHz slot
+ 
+   radio.SetPacketType(SX126x::RadioPacketTypes_t::PACKET_TYPE_LORA);
+ 
+@@ -36,11 +36,15 @@ void PinedioLoraRadio::Initialize() {
+   SX126x::ModulationParams_t modulationParams;
+   modulationParams.PacketType = SX126x::RadioPacketTypes_t::PACKET_TYPE_LORA;
+   modulationParams.Params.LoRa.LowDatarateOptimize = 0;
+-  modulationParams.Params.LoRa.Bandwidth = SX126x::RadioLoRaBandwidths_t::LORA_BW_500;
++  modulationParams.Params.LoRa.Bandwidth = SX126x::RadioLoRaBandwidths_t::LORA_BW_250;
+   modulationParams.Params.LoRa.CodingRate = SX126x::RadioLoRaCodingRates_t::LORA_CR_4_5;
+-  modulationParams.Params.LoRa.SpreadingFactor = SX126x::RadioLoRaSpreadingFactors_t::LORA_SF12;
++  modulationParams.Params.LoRa.SpreadingFactor = SX126x::RadioLoRaSpreadingFactors_t::LORA_SF11;
+   radio.SetModulationParams(modulationParams);
+ 
++  // Meshtastic LoRa sync word 0x2B, register 0x0740/0x0741 as RadioLib writes it
++  uint8_t syncWord[2] = {0x24, 0xB4};
++  radio.WriteRegister(SX126x::REG_LR_SYNCWORD, syncWord, 2);
++
+ 
+ 
+   static const char* message = "Hello, I'm a Pinephone!";
+@@ -49,10 +53,10 @@ void PinedioLoraRadio::Initialize() {
+   SX126x::PacketParams_t packetParams;
+   packetParams.PacketType = SX126x::RadioPacketTypes_t::PACKET_TYPE_LORA;;
+   packetParams.Params.LoRa.HeaderType = SX126x::RadioLoRaPacketLengthsMode_t::LORA_PACKET_VARIABLE_LENGTH;
+-  packetParams.Params.LoRa.InvertIQ = SX126x::RadioLoRaIQModes_t::LORA_IQ_INVERTED;
++  packetParams.Params.LoRa.InvertIQ = SX126x::RadioLoRaIQModes_t::LORA_IQ_NORMAL;
+   packetParams.Params.LoRa.CrcMode = SX126x::RadioLoRaCrcModes_t::LORA_CRC_ON;
+-  packetParams.Params.LoRa.PayloadLength = s;
+-  packetParams.Params.LoRa.PreambleLength = 8;
++  packetParams.Params.LoRa.PayloadLength = 255; // receive any Meshtastic frame
++  packetParams.Params.LoRa.PreambleLength = 16;
+   radio.SetPacketParams(packetParams);
+   radio.ClearIrqStatus(0xffff);
+   radio.SetRx(0xffffffff);
+@@ -76,10 +80,10 @@ std::vector<uint8_t> PinedioLoraRadio::Receive(std::chrono::milliseconds timeout
+       SX126x::PacketParams_t packetParams;
+       packetParams.PacketType = SX126x::RadioPacketTypes_t::PACKET_TYPE_LORA;;
+       packetParams.Params.LoRa.HeaderType = SX126x::RadioLoRaPacketLengthsMode_t::LORA_PACKET_VARIABLE_LENGTH;
+-      packetParams.Params.LoRa.InvertIQ = SX126x::RadioLoRaIQModes_t::LORA_IQ_INVERTED;
++      packetParams.Params.LoRa.InvertIQ = SX126x::RadioLoRaIQModes_t::LORA_IQ_NORMAL;
+       packetParams.Params.LoRa.CrcMode = SX126x::RadioLoRaCrcModes_t::LORA_CRC_ON;
+       packetParams.Params.LoRa.PayloadLength = transmitBuffer.size();
+-      packetParams.Params.LoRa.PreambleLength = 8;
++      packetParams.Params.LoRa.PreambleLength = 16;
+       radio.SetPacketParams(packetParams);
+ 
+       radio.SendPayload(transmitBuffer.data(), transmitBuffer.size(), 0xffffffff);
