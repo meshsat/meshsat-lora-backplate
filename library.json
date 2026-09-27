@@ -1,0 +1,17 @@
+{
+  "name": "meshsat-pinedio-bridge",
+  "version": "0.1.0",
+  "description": "The Pine64 LoRa back cover's I2C-to-SPI bridge as a transport for an SX1262 driver: SPI frames over the ATtiny84, with stand-ins for the BUSY, DIO1 and reset lines the bridge does not have. Includes a RadioLib hardware abstraction.",
+  "keywords": "lora, sx1262, pinephone, pinedio, radiolib, meshtastic, i2c",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meshsat/meshsat-lora-backplate.git"
+  },
+  "license": "GPL-3.0-or-later",
+  "frameworks": "*",
+  "platforms": ["native", "linux_arm", "linux_aarch64", "linux_x86_64"],
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src"
+  }
+}
