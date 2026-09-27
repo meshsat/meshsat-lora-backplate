@@ -47,8 +47,9 @@ import sys
 from dataclasses import dataclass, field
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-# A log line can follow binary output of the node's client interface on the same line.
-LINE = re.compile(r"(DEBUG|INFO|WARN|ERROR|TRACE|CRIT)\s*\|\s*(\S+)\s+(\d+)\s+\[([^\]]+)\]\s+(.*)$")
+# A log line can follow binary output of the node's client interface on the same line. Firmware
+# before 2.7 writes no thread name in brackets; the packet lines themselves read the same.
+LINE = re.compile(r"(DEBUG|INFO|WARN|ERROR|TRACE|CRIT)\s*\|\s*(\S+)\s+(\d+)\s+(?:\[([^\]]+)\]\s+)?(.*)$")
 RX_OK = re.compile(r"^Lora RX \(id=(0x[0-9a-f]+) fr=(0x[0-9a-f]+) to=(0x[0-9a-f]+),.*\bencrypted len=(\d+)\b(.*)\)$")
 RX_REFUSED = re.compile(
     r"^Ignore (?:received packet due to error=|rx packet, error=)(-?\d+) "
@@ -135,7 +136,7 @@ def read_log(path: str, source: str | None = None) -> list:
         _, _, uptime, thread, message = found.groups()
         event = Event("other", source or path, number, int(uptime) if read_at is None else read_at)
         uptime = event.uptime
-        if thread == "RadioIf":
+        if thread in ("RadioIf", None):
             offset = OFFSET.match(message)
             accepted = RX_OK.match(message)
             refused = RX_REFUSED.match(message)

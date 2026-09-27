@@ -287,6 +287,20 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(rows["b"]["verdict"], "accepted")
         self.assertEqual(rows["b"]["identity"], "id, length; the sender is the receiver's")
 
+    def test_a_receiver_on_older_firmware_writes_no_thread_name(self):
+        older = [
+            "DEBUG | ??:??:?? 1000 Corrected frequency offset: 241.218735",
+            "DEBUG | ??:??:?? 1000 Lora RX (id=0x11111111 fr=0x4d530a4a to=0xffffffff, WantAck=0, HopLim=0 Ch=0x5a encrypted len=32 rxSNR=6.5 rxRSSI=-58)",
+            "DEBUG | ??:??:?? 1000 Packet RX: 477ms",
+            "ERROR | ??:??:?? 1040 Ignore received packet due to error=-7 (maybe id=0x22222222 fr=0x4d530a4a to=0xffffffff flags=0x00 rxSNR=5.25 rxRSSI=-59)",
+            "DEBUG | ??:??:?? 1040 Packet RX (noise?) : 805ms",
+        ] + [f"DEBUG | ??:??:?? {u} SX126x AGC reset: warm sleep + Calibrate(0x7F)" for u in range(900, 1200, 20)]
+        rows = self.run_case(older, [attempt("a", "0x11111111", 32, 51000), attempt("b", "0x22222222", 76, 51040)])
+        self.assertEqual(rows["a"]["verdict"], "accepted")
+        self.assertEqual(rows["a"]["offset_hz"], 241.218735)
+        self.assertEqual(rows["b"]["verdict"], "crc_failed")
+        self.assertEqual(rows["b"]["rx_time_ms"], 805)
+
     def test_the_counts_add_up(self):
         rows = self.run_case(
             alive(900, 1200) + ok(1000, "0x11111111", 32) + refused(1040, "0x22222222"),
