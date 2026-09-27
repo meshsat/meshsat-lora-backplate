@@ -22,7 +22,7 @@ Pine64 sells a back cover for the PinePhone and the PinePhone Pro with a Semtech
 
 This repository closes that gap under Linux, in three steps: a bridge layer that lets Meshtastic's daemon talk to the radio through the ATtiny, the packaging that makes the phone a node, and then the MeshSat Bridge on the phone, so a phone in a pocket becomes a gateway between the LoRa mesh and the satellite.
 
-> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge, the transport and a LongFast receive are proven on one phone; nothing has been transmitted and the daemon has not run yet. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
+> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge, the transport, receive and transmit are proven on one phone on one bench, and Meshtastic's daemon has run on it. The radio needs a long preamble to send, and one fault left it deaf to every command, a reboot of the phone included. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
 
 ## How it fits together
 
@@ -45,8 +45,10 @@ flowchart LR
 - `test/`: a simulated back cover, the ATtiny as its firmware behaves and enough of an SX1262 to run RadioLib's unmodified driver against, on simulated time. 29 transport cases and 9 RadioLib cases.
 - `tools/bridge-selftest`: checks a real back cover without a radio library. Transmits nothing.
 - `tools/lora-listen`: RadioLib's driver over the bridge, receive only, tuned to Meshtastic's EU_868 LongFast by default.
+- `tools/lora-ping`: sends Meshtastic-shaped frames of a chosen length, power, coding rate and preamble, and listens for a neighbour relaying them. What found the preamble the radio needs.
+- `tools/node-setup/`: gives a new node its region, name, role and channels over the daemon's TCP port, and reads them back.
 - `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on the same settings, and the script that builds it on the phone. It received the T-Deck on 27 September 2026.
-- `packaging/meshtasticd/`: the daemon's configuration for the phone.
+- `packaging/meshtasticd/`: the daemon's configuration for the phone, with the long preamble and the 14 dBm the radio needs.
 - The daemon itself is built from the [MeshSat fork of the Meshtastic firmware](https://github.com/meshsat/meshsat-firmware), environment `meshsat-pinephone-pro`, which takes this library and adds `spidev: pinedio-i2c` as a radio bus. `meshsat-pinephone-pro-rxonly` is the same with its transmitter switched off at every boot.
 - Still to come: a service unit and an install page, and the pocket Bridge, the MeshSat Bridge on the phone with a TCP link to the daemon.
 
@@ -75,9 +77,12 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 | The transport against the real back cover, without the air   | **Yes**, `bridge-selftest` on 27 Sep 2026          |
 | RadioLib's driver started on the real radio through it       | **Yes**, `lora-listen` on 27 Sep 2026              |
 | A packet received by RadioLib's driver through it            | **Yes**, the T-Deck and the T-Beam, 50 and 170 bytes, 27 Sep 2026 |
-| Meshtastic's daemon running the radio through the bridge     | **Not yet**, first build in progress               |
-| Texts exchanged with another Meshtastic node                 | **Not built yet**                                  |
-| Anything transmitted from the back cover                     | **Never**, the antenna is not confirmed            |
+| Meshtastic's daemon running the radio through the bridge     | **Yes**, 27 Sep 2026, with the usual preamble      |
+| A text received by the daemon, and a traceroute there and back | **Yes**, with a T-Deck Pro, 27 Sep 2026          |
+| A text sent by the daemon and read on another node           | **Not yet**: damaged with the usual preamble; the long one is not proven in the daemon |
+| Frames transmitted from the back cover                       | **Yes**, up to 216 bytes intact at 2 m with a preamble of 128 symbols or more, 27 Sep 2026 |
+| Range, and packet loss over time                             | **Not measured**                                   |
+| Recovery of a radio that stopped answering, without hands    | **No**, a reboot does not reset it                 |
 | The MeshSat Bridge on the phone, a text out to the satellite | **Not built yet**                                  |
 | Deployment to a real end user                                | **Never**                                          |
 | Use in an actual emergency                                   | **Never**                                          |
