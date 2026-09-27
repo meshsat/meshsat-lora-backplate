@@ -21,6 +21,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <dirent.h>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -62,6 +64,28 @@ double epoch()
     using namespace std::chrono;
     return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count() / 1e6;
 }
+/// True when a process of that name runs. Two users of one bridge would each read the other's
+/// replies, and the daemon's frames would go uncounted: the tool does not run beside it.
+bool processRunning(const char *name)
+{
+    DIR *proc = opendir("/proc");
+    if (!proc)
+        return false;
+    bool found = false;
+    while (dirent *entry = readdir(proc)) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
+            continue;
+        std::ifstream comm(std::string("/proc/") + entry->d_name + "/comm");
+        std::string line;
+        if (std::getline(comm, line) && line == name) {
+            found = true;
+            break;
+        }
+    }
+    closedir(proc);
+    return found;
+}
+
 std::string plain(const std::string &text)
 {
     std::string out;
@@ -168,6 +192,11 @@ int main(int argc, char **argv)
     std::signal(SIGHUP, onSignal); // a session that ends finishes the frame and leaves the radio in standby
     setvbuf(stdout, nullptr, _IOLBF, 0);
 
+    if (processRunning("meshtasticd")) {
+        std::fprintf(stderr, "meshtasticd is running: stop it first, and put its frames into the ledger with\n"
+                             "tools/bench/daemon_airtime.py, so that the hour is counted for both\n");
+        return 6;
+    }
     const bench::Ledger ledger(ledgerPath);
     LinuxI2cPort port;
     SystemClock clock;
@@ -278,20 +307,12 @@ int main(int argc, char **argv)
             break;
         }
         uint16_t flags = 0;
+        const uint64_t deadline = t0 + (uint64_t)((loadedMs + airMs + 3000) * 1000);
         if (quietTx) {
             clock.sleepUs((uint64_t)((airMs + 150) * 1000));
             flags = (uint16_t)radio.getIrqFlags();
         } else {
-            while (!stopping && clock.nowUs() - t0 < (uint64_t)((loadedMs + airMs + 3000) * 1000)) {
-                if (lineRose.exchange(false)) {
-                    flags = (uint16_t)radio.getIrqFlags();
-                    if (flags & RADIOLIB_SX126X_IRQ_TX_DONE)
-                        break;
-                }
-                clock.sleepUs(2000);
-            }
-            if (!(flags & RADIOLIB_SX126X_IRQ_TX_DONE))
-                flags = (uint16_t)radio.getIrqFlags();
+            flags = bench::awaitTransmitDone(radio, clock, deadline, &lineRose, &stopping);
         }
         const double doneMs = (clock.nowUs() - t0) / 1000.0;
         const bool done = (flags & RADIOLIB_SX126X_IRQ_TX_DONE) != 0;

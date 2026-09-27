@@ -25,6 +25,19 @@ both sides agree on.
 A log is either the receiver's output as it came, or the file capture.py writes. The second
 says when this computer read each line and proves, line by line of its own, that the capture
 was running while the receiver had nothing to say.
+
+Time. "t_end" is when the sender saw the frame end: the tool stamps it after the radio said
+transmit-done, the daemon logs "Completed sending", both some tens of milliseconds after the
+last symbol. A receiver writes its line after the last symbol and its own processing. The two
+clocks are lined up on the frames both sides agree on (the median of their differences), and a
+line counts for a frame when it falls between the frame's start less --tolerance and its end
+plus --tolerance, 4 s by default: room for the stamps, the receiver's processing and the
+alignment, and too little for the same id logged at another time. The tolerance is not widened
+until a match appears.
+
+Identity. A match needs the packet id, the sender and the length. An attempt whose sender was
+not written down on the sender side ("sender_recorded": false, the sender then taken from the
+receiver's own line) is matched on id and length, and its row says so in "identity".
 """
 import argparse
 import json
@@ -218,6 +231,7 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
         span = window(attempt)
         row = dict(attempt)
         row.update(verdict="", reason="", content="not_checked", events=[], error_codes=[], capture="unknown")
+        row["identity"] = "id, sender, length" if attempt.get("sender_recorded", True) else "id, length; the sender is the receiver's"
 
         def inside(event) -> bool:
             return span is None or span[0] <= event.uptime <= span[1]

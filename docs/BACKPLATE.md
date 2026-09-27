@@ -124,7 +124,9 @@ The first is the T-Deck, the second the T-Beam. The second is longer than one br
 |---|---|
 | accepted | A complete `Lora RX` line with the frame's packet id and length, at the time the frame was on the air. The receiver's checksum passed. **The content is not compared.** |
 | refused | A complete `Ignore received packet due to error=-7` line with the frame's id. The id in such a line comes from a damaged frame and is tentative. |
-| no verdict | The capture was not running, the receiver was sending at that moment, or the log contradicts itself. Such a frame counts neither for the radio nor against it. |
+| no verdict | The capture was not running, the receiver was sending at that moment, or the log contradicts itself. Such a frame says nothing about the transmitter; it was still on the air, and it counts in the airtime. A receiver that was sending is a delivery missed at that receiver. |
+
+The receiver's log also gives an airtime for a refused frame: its own sum for the length it read, with its own preamble of 16 symbols. It gives the frame's length, not the time the frame really took.
 
 One receiver, one evening, one unit, the phone not fixed in place. The counts are small: 4 accepted out of 4 still allows a true rate as low as 47 %, and none out of 12 allows one as high as 22 % (one-sided, 95 %). None of this is a reliability figure.
 
@@ -180,7 +182,7 @@ The T-Deck Pro logs a frequency offset for every packet it accepts. It is the re
 
 So the other nodes stand still and the back cover's transmitter moves by more than 1 ppm with what it has just been doing. Semtech's datasheet for the SX1261/2 (revision 1.2, section 4.1.2) gives the drift a LoRa receiver tolerates over one packet, without low data rate optimisation, as bandwidth / (3 x 2^SF): 40.7 Hz at SF11 and 250 kHz, which is 0.047 ppm at this frequency. Semtech's application note AN1200.37 describes a crystal next to a power amplifier drifting from its heat, and recommends a TCXO or thermal relief for it. This cover has a crystal.
 
-**What is established and what is not.** Established: the frequency moves with the transmit history, and long frames are refused while it moves quickly. Not established: that this movement is what damages the frames, how it divides between the amplifier's heat, the supply and the oscillator starting, and what happens inside one frame. No frequency, temperature or supply voltage was measured directly.
+**What is established and what is not.** Established: among the frames the receiver accepted, its estimate of the transmitter's frequency varies with the transmit history, by more than 1 ppm over the evening, while the other nodes' estimates hold within a few hertz. Not established: anything about the frames that were refused, for which there is no estimate; that this movement is what damages them; how it divides between the amplifier's heat, the supply and the oscillator starting; and what happens inside one frame. A low power setting is not a low dissipation: RadioLib takes another amplifier configuration for every dBm, and the current was not measured. No frequency, temperature or supply voltage was measured directly.
 
 ### The power that is asked for and the power that arrives
 
@@ -210,7 +212,9 @@ build/lora-ping /dev/i2c-5 --power 0 --payload 160 --preamble 160 --hops 0 --cou
 tools/bench/verdict.py --attempts airtime.jsonl --log receiver.jsonl --out ledger.jsonl
 ```
 
-`--from` is what the radio does during the second the load takes: `standby` is the daemon's way and stops the crystal, `standby-xosc` and `rx` keep it running. The tool prints the mode the radio reported before and after the load. It writes every frame into `~/.local/state/meshsat-lora-backplate/airtime.jsonl` before sending it and does not send when 300 s of the last hour are spent; `tools/bench/daemon_airtime.py` adds what the daemon sent. None of this has been on the air yet: it was written and tested against the simulated back cover while the bench was paused.
+`--from` is what the radio does during the second the load takes: `standby` is the daemon's way and stops the crystal, `standby-xosc` and `rx` keep it running. The tool prints the mode the radio reported before and after the load; those are two readings, and what the radio did between them is inferred from the commands sent, not observed. The end of a frame is the radio's transmit-done flag and nothing else: the tool it replaces latched the emulated interrupt line, which a packet received during the load could raise, and would then have stopped the radio while the frame was still on the air. That path was never taken in the 87 frames of 27 September (every frame was reported sent, with its end 9 to 47 ms after its computed end); for the 70 frames whose sender-side record was lost it cannot be excluded.
+
+The tool writes every frame into `~/.local/state/meshsat-lora-backplate/airtime.jsonl` before sending it and does not send when 300 s of the last hour are spent. The daemon and the tool never share the bridge: the tool refuses to start while `meshtasticd` runs. The order is: stop the daemon, `tools/bench/daemon_airtime.py` its log into the same file, then the tool. None of this has been on the air yet: it was written and tested against the simulated back cover while the bench was paused.
 
 ### What went wrong with the first conclusion
 
