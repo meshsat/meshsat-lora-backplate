@@ -22,7 +22,7 @@ Pine64 sells a back cover for the PinePhone and the PinePhone Pro with a Semtech
 
 This repository closes that gap under Linux, in three steps: a bridge layer that lets Meshtastic's daemon talk to the radio through the ATtiny, the packaging that makes the phone a node, and then the MeshSat Bridge on the phone, so a phone in a pocket becomes a gateway between the LoRa mesh and the satellite.
 
-> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge and a LongFast receive are proven on one phone; nothing else has run on hardware yet. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
+> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge, the transport and a LongFast receive are proven on one phone; nothing has been transmitted and the daemon has not run yet. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
 
 ## How it fits together
 
@@ -40,27 +40,47 @@ flowchart LR
 
 ## What is here
 
-- `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on Meshtastic's EU_868 LongFast settings, and the script that builds it on the phone. Built and run on the phone on 27 September 2026; it received the T-Deck.
-- [`docs/BACKPLATE.md`](docs/BACKPLATE.md): the bridge protocol as verified on the phone (bus and address, how an SPI transfer is carried, the ring-buffer sync, what the bridge cannot do), written from the bench of 27 September 2026.
-- The bridge layer for Meshtastic's Linux daemon, built with the [MeshSat fork of the Meshtastic firmware](https://github.com/meshsat/meshsat-firmware).
-- The daemon configuration, a service unit and an install page for the phone.
-- The pocket Bridge: the MeshSat Bridge on the phone with a TCP link to the daemon.
+- [`docs/BACKPLATE.md`](docs/BACKPLATE.md): the bridge as verified on the phone. Bus and address, how an SPI transfer is carried, the ring-buffer sync, what the bridge cannot do, and how it behaves in time, measured on the bench of 27 September 2026.
+- `src/`: **the bridge as a transport for an SX1262 driver.** `PineDioBridge` carries SPI frames over the ATtiny and stands in for the BUSY, DIO1 and reset lines the back cover does not have. `PineDioBridgeHal` adapts it to [RadioLib](https://github.com/jgromes/RadioLib). `library.json` makes it a PlatformIO library.
+- `test/`: a simulated back cover, the ATtiny as its firmware behaves and enough of an SX1262 to run RadioLib's unmodified driver against, on simulated time. 29 transport cases and 9 RadioLib cases.
+- `tools/bridge-selftest`: checks a real back cover without a radio library. Transmits nothing.
+- `tools/lora-listen`: RadioLib's driver over the bridge, receive only, tuned to Meshtastic's EU_868 LongFast by default.
+- `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on the same settings, and the script that builds it on the phone. It received the T-Deck on 27 September 2026.
+- `packaging/meshtasticd/`: the daemon's configuration for the phone.
+- The daemon itself is built from the [MeshSat fork of the Meshtastic firmware](https://github.com/meshsat/meshsat-firmware), environment `meshsat-pinephone-pro`, which takes this library and adds `spidev: pinedio-i2c` as a radio bus. `meshsat-pinephone-pro-rxonly` is the same with its transmitter switched off at every boot.
+- Still to come: a service unit and an install page, and the pocket Bridge, the MeshSat Bridge on the phone with a TCP link to the daemon.
+
+## Build and test
+
+```
+cmake -B build && cmake --build build -j4
+ctest --test-dir build                        # the simulated back cover, no hardware
+build/bridge-selftest /dev/i2c-5              # a real back cover
+build/lora-listen /dev/i2c-5 --seconds 600
+```
+
+RadioLib is fetched at version 7.7.1, or taken from `-DRADIOLIB_DIR=`. On the phone: `apt install i2c-tools git cmake g++ make`, the user in group `i2c`.
 
 ## The bridge, in short
 
-The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C write: the byte 0x01 followed by the bytes to clock out. The bytes the radio clocked back during that write are read afterwards, one byte per I2C read. The radio's BUSY and DIO1 lines are not brought out as GPIO, so the driver asks the radio itself, through the bridge, whether it is busy and which interrupts are set. This makes the link slower than a wired SPI bus; the bench measures by how much. The protocol comes from JF002's driver for the back cover, which this project uses for the first bring-up.
+The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C write: the byte 0x01 followed by the bytes to clock out. The bytes the radio clocked back during that write are read afterwards, one byte per I2C read. The radio's BUSY and DIO1 lines are not brought out as GPIO, so the driver asks the radio itself, through the bridge, which interrupts are set, and waits out the time the radio would have been busy. The link is slow: about 4 ms for every byte, because the bridge's firmware prints each one on a debug port. Asking the radio whether anything happened takes 6 ms, fetching a received frame of 50 bytes 290 ms. The protocol comes from JF002's driver for the back cover, which this project used for the first bring-up.
 
 ## What is proven, and what is not
 
-|                                                            | State                                       |
-| ---------------------------------------------------------- | ------------------------------------------- |
-| The bridge answers on the PinePhone Pro                    | **Yes**, 0x28 on i2c-5, Mobian 6.12, 27 Sep 2026 |
-| A LongFast packet received through the existing driver     | **Yes**, a T-Deck text on 27 Sep 2026, see [docs/BACKPLATE.md](docs/BACKPLATE.md) |
-| Meshtastic's daemon running the radio through the bridge   | **Not built yet**                           |
-| Texts exchanged with another Meshtastic node               | **Not built yet**                           |
-| The MeshSat Bridge on the phone, a text out to the satellite | **Not built yet**                         |
-| Deployment to a real end user                              | **Never**                                   |
-| Use in an actual emergency                                 | **Never**                                   |
+|                                                              | State                                              |
+| ------------------------------------------------------------ | -------------------------------------------------- |
+| The bridge answers on the PinePhone Pro                      | **Yes**, 0x28 on i2c-5, Mobian 6.12, 27 Sep 2026   |
+| A LongFast packet received through the existing driver       | **Yes**, a T-Deck text on 27 Sep 2026              |
+| The transport against a simulated back cover                 | **Yes**, 38 cases, also under ASan, UBSan and TSan |
+| The transport against the real back cover, without the air   | **Yes**, `bridge-selftest` on 27 Sep 2026          |
+| RadioLib's driver started on the real radio through it       | **Yes**, `lora-listen` on 27 Sep 2026              |
+| A packet received by RadioLib's driver through it            | **Not yet**: nothing was on the air while it listened |
+| Meshtastic's daemon running the radio through the bridge     | **Not yet**, first build in progress               |
+| Texts exchanged with another Meshtastic node                 | **Not built yet**                                  |
+| Anything transmitted from the back cover                     | **Never**, the antenna is not confirmed            |
+| The MeshSat Bridge on the phone, a text out to the satellite | **Not built yet**                                  |
+| Deployment to a real end user                                | **Never**                                          |
+| Use in an actual emergency                                   | **Never**                                          |
 
 ## Related projects
 
