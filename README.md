@@ -82,8 +82,8 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 | Meshtastic's daemon running the radio through the bridge     | **Yes**, 27 Sep 2026, with the usual preamble      |
 | A text received by the daemon, and a traceroute there and back | **Yes**, with a T-Deck Pro, 27 Sep 2026          |
 | A text sent by the daemon and read on another node           | **No.** Six sendings of 90 and 154 bytes and a node announcement of 176 bytes were all refused with a checksum error, 27 Sep 2026 |
-| Short frames sent by the back cover, accepted by another node | **Yes**, 32 bytes at 14 and 22 dBm, 6 of 6, at 2 m, 27 Sep 2026; checksum only, the content was not compared |
-| Frames of 90 to 240 bytes from a rested radio                | **No** at 5 dBm and above, whatever the preamble. With a long preamble at 0 dBm and below, 126 bytes were accepted 5 of 5; longer ones mostly not |
+| Short frames sent by the back cover, accepted by another node | **Yes**, 32 bytes at 14 and 22 dBm, 6 of 6, and 76 bytes at 10 dBm, 2 of 2, at 2 m, 27 Sep 2026; checksum only, the content was not compared |
+| Frames of 126 bytes and more from a rested radio             | **No** at 5 dBm and above: 0 of 22, with preambles of 160 to 320 symbols. At 0 dBm and below with a long preamble, 126 bytes were accepted 5 of 5, longer ones 2 of 12 |
 | Range, and packet loss over time                             | **Not measured**                                   |
 | Recovery of a radio that stopped answering, without hands    | **No**, a reboot does not reset it, and the cause is not known |
 | Use without a person nearby                                  | **Not possible** as long as only a hand can reset the radio |

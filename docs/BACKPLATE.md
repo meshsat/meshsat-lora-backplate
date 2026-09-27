@@ -112,7 +112,7 @@ The first is the T-Deck, the second the T-Beam. The second is longer than one br
 
 ## Transmitting
 
-**State on 27 September 2026: not solved, and nothing in this section is a qualified setting.** A frame of 32 bytes is accepted at every power tried. From a rested radio, frames of the lengths the daemon really sends, 90 to 176 bytes, are refused with a checksum error at 5 dBm and above, whatever the preamble. An earlier version of this page said a long preamble fixes this. It does not: see "What went wrong with the first conclusion" below.
+**State on 27 September 2026: not solved, and nothing in this section is a qualified setting.** A frame of 32 bytes was accepted every time, 6 of 6. From a rested radio at 5 dBm and above, no frame of 126 bytes or more was accepted, 0 of 22, with preambles of 160 to 320 symbols; the daemon's own frames are 90 to 176 bytes. At 0 dBm and below, 126 bytes were accepted 5 of 5 and longer frames 2 of 12. An earlier version of this page said a long preamble fixes this. It does not: see "What went wrong with the first conclusion" below.
 
 ### How it is measured
 
@@ -171,7 +171,7 @@ The T-Deck Pro logs a frequency offset for every packet it accepts. It is the re
 |---|---|
 | T-Deck Plus | 239 to 247 Hz, five packets over three hours |
 | T-Beam | 658 Hz, one packet |
-| Back cover, rested, 0 dBm and below | 4254 to 4300 Hz |
+| Back cover at 0 dBm and below, after a quarter of an hour without sending | 4254 to 4300 Hz |
 | Back cover, ten frames at 22 dBm | rising to 5461 Hz; from the fifth frame on, the first accepted, by 48, 37, 33, 23 and 23 Hz from frame to frame |
 | Back cover, eight frames at -9 dBm | 4413 Hz rising to 4603 Hz, by 66, 39, 25, 21, 14, 14 and 12 Hz from frame to frame |
 | Back cover, earlier session, frames in a steady row at full power | 5709 to 5748 Hz, moving 0 to 8 Hz from frame to frame, once 21 Hz |
