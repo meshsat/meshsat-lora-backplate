@@ -75,6 +75,7 @@ class Sx1262
   private:
     void tick();
     void coldStart();
+    void warmStart();
     void raise(uint16_t flags) { irq |= (uint16_t)(flags & irqMask); }
     uint8_t status() const;
     void busyFor(uint64_t us);
@@ -92,6 +93,7 @@ class Sx1262
     uint16_t deviceErrors = 0;
     bool rxContinuous = false;
     bool channelBusy = false;
+    bool sleptWarm = false;
     uint64_t busyUntil = 0, txDoneAt = 0, cadDoneAt = 0;
     unsigned violations = 0, ignored = 0, frameCount = 0, longest = 0;
     std::vector<std::vector<uint8_t>> sent;
