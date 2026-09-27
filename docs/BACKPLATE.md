@@ -1,6 +1,6 @@
 # The back cover, as verified on the phone
 
-Bench of 27 September 2026: a PinePhone Pro running Mobian (Debian 13, kernel 6.12-rockchip, Tow-Boot 2021.10 in SPI) with the Pine64 LoRa back cover, a T-Deck Plus and a T-Beam as Meshtastic nodes on EU_868 LongFast. Everything below was observed on that bench unless marked *from source*.
+Bench of 27 September 2026: a PinePhone Pro running Mobian (Debian 13, kernel 6.12-rockchip, Tow-Boot 2021.10 in SPI) with the Pine64 LoRa back cover, and a T-Deck Plus, a T-Beam and a T-Deck Pro as Meshtastic nodes on EU_868 LongFast. Everything below was observed on that bench unless marked *from source*.
 
 ## Where the cover is
 
@@ -110,6 +110,52 @@ build/lora-listen /dev/i2c-5 --seconds 600    # RadioLib's driver over the bridg
 
 The first is the T-Deck, the second the T-Beam. The second is longer than one bridge transaction, so its payload was fetched from the radio in two frames with the offset moved along, and the radio's checksum over the whole packet held. Reading a packet takes about 4.8 ms per byte of it, during which the radio is not listening.
 
+## Transmitting
+
+`lora-ping` sends Meshtastic-shaped frames of a chosen length and power. A T-Deck Pro two metres away, its firmware log read over USB, said of every frame whether it arrived intact or with a checksum error (`error=-7`). A frame that failed was still heard, and rejected for its checksum.
+
+| Preamble | Power | Frames that arrived intact |
+|---|---|---|
+| 16 symbols, Meshtastic's usual | 10 dBm | up to about 76 bytes |
+| 16 symbols | 22 dBm | up to 32 bytes |
+| 16 symbols | 0 dBm | 116 and 122 bytes did not |
+| 16 symbols, coding rate 4/8 | 22 dBm | 76 and 126 bytes did not |
+| 96 symbols | 22 dBm | 126 bytes did not |
+| 128 and 160 symbols | 22 dBm | 126 bytes did |
+| 200 symbols | 10 and 22 dBm | every length tried, up to 216 bytes |
+
+**The back cover needs a long preamble to send anything longer than a short frame.** The radio runs on a plain crystal, not a TCXO. What fits the numbers is that the crystal drifts while the transmitter starts, that the receiver locks at the end of the preamble, and that with a long preamble the drift is over by then. Nobody has measured the frequency itself. Less power helps a little and does not cure it; a stronger coding rate does not help; keeping the bridge silent while the frame is on the air (`--quiet-tx`) changes nothing, so the bridge's traffic is not the cause.
+
+A receiver accepts a preamble of any length, so the other nodes need no change. The price is time on air: 160 symbols at SF11 and 250 kHz are 1.3 s for every packet, against 0.13 s for 16.
+
+This matters more than it looks, because firmware 2.8 signs every broadcast and the signature is 66 bytes. The same short text that leaves a T-Deck as a frame of 30 bytes leaves the daemon as one of 106, over the limit of the usual preamble.
+
+## The daemon
+
+Meshtastic's daemon, built from the MeshSat firmware with `env:meshsat-pinephone-pro`, drove the radio through the bridge for the first time on 27 September 2026. With the usual preamble and continuous receive:
+
+- it received and decoded a text from the T-Deck Pro;
+- its traceroute to the T-Deck Pro came back after 1.3 s, with the signal reports of both ends in it: a full round trip;
+- its own texts reached the T-Deck Pro damaged, which is what led to the table above. Traceroutes are short and got through.
+
+A node that never had a region makes its keys when it gets one, and takes its node number from them. Over the bridge that took 108 s. `tools/node-setup/set-channels.py` sets the region first, waits for the node to come back under its new number, and only then sets the rest.
+
+**The long preamble is for sending only.** Meshtastic hands its preamble length to RadioLib's duty-cycled receive, which sleeps the radio for as long as the preamble allows. With 16 symbols that is no sleep at all. With 160 it is 1.2 s of sleep in every 1.25 s, in which the radio misses its neighbours, whose preamble is still 16 symbols, and in which every poll through the bridge wakes it and reads rubbish. The first build with the long preamble did exactly that: in 90 s it reported 15 packets, all of them bad, among them its own last transmission read back from the radio's buffer, and it restarted the radio four times. Behind this bridge the radio has to receive continuously.
+
+## When the radio stops answering
+
+At the end of those 90 s the radio stopped obeying commands, and it has to be said plainly: **software could not bring it back.**
+
+| | Observed |
+|---|---|
+| The bridge | Answers at 0x28 and clocks frames out in the usual 3.5 ms per byte. |
+| The radio | Answers every frame with the same bytes, `f0 a0` and then more status-like bytes, whatever the command. It returns no register and no buffer content, so the start-up sync never finds its pattern. |
+| In a long frame | The status bytes walk through standby, oscillator, synthesizer and receive within some 50 ms, as if the radio ran a receive cycle of its own on every chip-select edge. |
+| Wake, `SetStandby`, cold `SetSleep` | No effect, at any spacing between 0 and 130 ms. |
+| Rebooting the phone | No effect. The ATtiny's ring buffer still held the bytes from before the reboot: the cover's supply is not cut by a reboot, and the kernel offers no regulator for it. |
+
+The ATtiny's firmware has one more command, `0x02`, which sets its SPI mode, bit order and clock. It is marked untested in the source and, as written, can only ever select LSB first. `0x02` is also the radio's `ClearIrqStatus` opcode, so a frame that lost its leading `0x01` on the way would reconfigure the bridge instead of reaching the radio. That was checked and is not what happened here: the radio does not answer bit-reversed commands either, and its status bytes read correctly in the normal bit order.
+
 ## Running the demo on the phone
 
 Packages: `i2c-tools git cmake g++ make`. Then `sh tools/jf002-demo/build.sh` and:
@@ -128,4 +174,6 @@ Bench phone settings that make this repeatable: `i2c-dev` in `/etc/modules-load.
 - BUSY wiring on this board revision (the 25 April 2021 schematic routes it to ATtiny PB2, the 2 April one does not). No firmware reads it either way.
 - Whether the debug serial output is really what takes the time: it fits the numbers and the source, but nobody has put a probe on the ATtiny's pin.
 - Range and packet loss. Every packet so far came from a node in the same room.
-- Whether the phone can cut the cover's supply, which would be the only way to reset the radio.
+- What state the radio was in when it stopped answering, and whether taking the cover off and putting it back is enough to reset it. A reboot is not, and the phone has no switch for the cover's supply.
+- The daemon with the long preamble and continuous receive, on the air.
+- The crystal's drift itself. The preamble lengths are measured, the explanation is not.
