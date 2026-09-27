@@ -53,6 +53,13 @@ uint8_t readRegister(Bridge &b, uint16_t address)
     return in[4];
 }
 
+/// True when, after one more reply has been fetched, nothing is left unread in the ring.
+bool level(Bridge &b, Backplate &plate)
+{
+    uint8_t out[2] = {0xC0, 0}, in[2] = {0};
+    return b.transfer(out, in, 2) && plate.unread() == 0;
+}
+
 void startReceiving(Bridge &b, uint16_t mask = sim::IrqRxDone)
 {
     const uint8_t dio[9] = {0x08, (uint8_t)(mask >> 8), (uint8_t)mask, (uint8_t)(mask >> 8), (uint8_t)mask, 0, 0, 0, 0};
@@ -132,10 +139,10 @@ TEST(every_buffer_length_survives_the_trip)
             break;
     }
     CHECK_EQ(plate.oversize(), 0);
-    CHECK(plate.longestWrite() <= 65);        // 64 SPI bytes and the bridge's command byte
-    CHECK(plate.radio.longestFrame() <= 64);
+    CHECK(plate.longestWrite() <= 97);        // 96 SPI bytes and the bridge's command byte
+    CHECK(plate.radio.longestFrame() <= 96);
     CHECK_EQ(plate.radio.busyViolations(), 0);
-    CHECK_EQ(plate.unread(), 0);
+    CHECK(level(bridge, plate));
     CHECK(bridge.stats().split > 0);
 }
 
@@ -233,8 +240,114 @@ TEST(the_ring_stays_level_over_thousands_of_frames)
             break;
         }
     }
-    CHECK_EQ(plate.unread(), 0);
+    CHECK(level(bridge, plate));
     CHECK_EQ(plate.radio.busyViolations(), 0);
+}
+
+TEST(the_reply_to_a_command_that_only_writes_is_never_read)
+{
+    SimClock clock;
+    Backplate plate(clock, 73);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    const unsigned readsBefore = plate.reads();
+    const uint8_t freq[5] = {0x86, 0x36, 0x58, 0x66, 0x66};
+    uint8_t in[5] = {0};
+    for (int i = 0; i < 40; i++)
+        CHECK(bridge.transfer(freq, in, sizeof(freq)));
+    CHECK_EQ(plate.reads(), readsBefore);
+    CHECK_EQ(in[1], 0x22); // the status the radio gave when it was last asked
+    CHECK(writeBuffer(bridge, 0, ramp(255)));
+    CHECK_EQ(plate.reads(), readsBefore);
+    CHECK(bridge.stats().readsSaved >= 40 * 5 + 257);
+
+    // and the next reply that matters is still the right one
+    CHECK(readBuffer(bridge, 0, 255) == ramp(255));
+    CHECK_EQ(readRegister(bridge, 0x0740), 0x14);
+    CHECK(level(bridge, plate));
+    CHECK_EQ(plate.radio.busyViolations(), 0);
+}
+
+TEST(a_stale_complaint_is_not_pinned_on_the_next_write)
+{
+    SimClock clock;
+    Backplate plate(clock, 97);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    uint8_t bogus[3] = {0x55, 0, 0}, in[3] = {0}; // not a command: the radio answers "invalid"
+    CHECK(bridge.transfer(bogus, in, sizeof(bogus)));
+    uint8_t status[2] = {0xC0, 0}, reply[2] = {0};
+    CHECK(bridge.transfer(status, reply, 2));
+    const uint8_t freq[5] = {0x86, 0x36, 0x58, 0x66, 0x66};
+    uint8_t out[5] = {0};
+    CHECK(bridge.transfer(freq, out, sizeof(freq)));
+    CHECK_EQ((out[1] >> 1) & 7, 1);  // no complaint
+    CHECK_EQ((out[1] >> 4) & 7, 2);  // standby, as last seen
+}
+
+TEST(the_ring_is_levelled_from_every_leftover)
+{
+    for (unsigned leftover = 1; leftover < 128; leftover++) {
+        SimClock clock;
+        Backplate plate(clock, 79 + leftover);
+        Bridge bridge(plate, clock);
+        CHECK(bridge.begin());
+        // leave exactly `leftover` reply bytes unread, in write-only frames of mixed length
+        unsigned left = leftover;
+        while (left) {
+            const unsigned n = left > 60 ? 60 : left;
+            std::vector<uint8_t> out(n, 0x00);
+            out[0] = n >= 2 ? 0x0E : 0x80; // WriteBuffer, or a bare SetStandby opcode
+            CHECK(bridge.transfer(out.data(), nullptr, n));
+            left -= n;
+        }
+        CHECK_EQ(plate.unread(), leftover);
+        const unsigned readsBefore = plate.reads();
+        const uint8_t sync[5] = {0x0D, 0x07, 0x40, 0x24, (uint8_t)leftover};
+        CHECK(bridge.transfer(sync, nullptr, sizeof(sync)));
+        CHECK_EQ(readRegister(bridge, 0x0741), leftover);
+        // reading is only chosen when it is the cheaper way
+        const unsigned spent = plate.reads() - readsBefore;
+        CHECK(spent <= 5 + 3);
+        CHECK_EQ(plate.unread(), 0);
+        CHECK_EQ(plate.radio.busyViolations(), 0);
+        CHECK_EQ(plate.oversize(), 0);
+    }
+}
+
+TEST(padding_is_made_of_commands_the_radio_knows)
+{
+    SimClock clock;
+    Backplate plate(clock, 83);
+    Config cfg;
+    cfg.maxSpiFrame = 32; // padding has to come in several frames
+    Bridge bridge(plate, clock, cfg);
+    CHECK(bridge.begin());
+    CHECK(writeBuffer(bridge, 0, ramp(10)));
+    CHECK(readBuffer(bridge, 0, 10) == ramp(10));
+    CHECK(bridge.stats().padBytes > 0);
+    for (uint8_t op : plate.radio.opcodes())
+        CHECK(op == 0xC0 || op == 0x80 || op == 0x8F || op == 0x0E || op == 0x1E);
+    CHECK(plate.radio.longestFrame() <= 32);
+    CHECK_EQ(readRegister(bridge, 0x0740), 0x14); // padding wrote nothing anywhere
+    CHECK(readBuffer(bridge, 0, 10) == ramp(10));
+}
+
+TEST(every_reply_can_still_be_read_when_asked)
+{
+    SimClock clock;
+    Backplate plate(clock, 89);
+    Config cfg;
+    cfg.skipWriteReplies = false;
+    Bridge bridge(plate, clock, cfg);
+    CHECK(bridge.begin());
+    const unsigned readsBefore = plate.reads();
+    const uint8_t freq[5] = {0x86, 0x36, 0x58, 0x66, 0x66};
+    uint8_t in[5] = {0};
+    CHECK(bridge.transfer(freq, in, sizeof(freq)));
+    CHECK_EQ(plate.reads(), readsBefore + 5);
+    CHECK_EQ(plate.unread(), 0);
+    CHECK_EQ(bridge.stats().padBytes, 0);
 }
 
 TEST(dio1_edge_is_delivered_once_per_event)
@@ -367,7 +480,7 @@ TEST(reset_line_is_a_cold_restart)
     CHECK_EQ(readRegister(bridge, 0x0740), 0x14); // configuration forgotten
     CHECK_EQ(bridge.dio1Mask(), 0);
     CHECK_EQ(plate.radio.busyViolations(), 0);
-    CHECK_EQ(plate.unread(), 0);
+    CHECK(level(bridge, plate));
 }
 
 TEST(calibration_and_mode_changes_never_meet_a_busy_radio)
@@ -397,7 +510,7 @@ TEST(an_unacknowledged_write_is_repeated)
     CHECK_EQ(plate.radio.reg(0x0740), 0x24);
     CHECK_EQ(bridge.stats().retries, 2);
     CHECK(!bridge.inError());
-    CHECK_EQ(plate.unread(), 0);
+    CHECK(level(bridge, plate));
 }
 
 TEST(a_failed_read_stops_everything_until_the_next_begin)
@@ -417,6 +530,7 @@ TEST(a_failed_read_stops_everything_until_the_next_begin)
     CHECK(!bridge.inError());
     CHECK(bridge.transfer(out, in, 2));
     CHECK_EQ(in[1], 0x22);
+    CHECK_EQ(plate.unread(), 0);
 }
 
 TEST(the_polling_thread_delivers_an_edge_by_itself)

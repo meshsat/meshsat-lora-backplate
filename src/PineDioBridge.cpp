@@ -34,6 +34,27 @@ const uint8_t OP_SET_FS = 0xC1;
 const uint8_t OP_SET_CAD = 0xC5;
 
 const size_t BRIDGE_MAX_FRAME = 127;
+const unsigned BRIDGE_RING = 128;
+
+/// Commands whose reply carries something. Anything not listed here only writes.
+bool repliesWithData(uint8_t opcode)
+{
+    switch (opcode) {
+    case 0x10: // GetStats
+    case 0x11: // GetPacketType
+    case 0x12: // GetIrqStatus
+    case 0x13: // GetRxBufferStatus
+    case 0x14: // GetPacketStatus
+    case 0x15: // GetRssiInst
+    case 0x17: // GetDeviceErrors
+    case 0x1D: // ReadRegister
+    case 0x1E: // ReadBuffer
+    case 0xC0: // GetStatus
+        return true;
+    default:
+        return false;
+    }
+}
 const size_t SYNC_PATTERN = 12;
 const size_t BRIDGE_MIN_FRAME = 16; // the sync reads its pattern back in one frame of 3 + 12 bytes
 } // namespace
@@ -94,15 +115,12 @@ bool Bridge::rawWriteOnly(const uint8_t *out, size_t len)
     }
     counters.frames++;
     counters.spiBytes += len;
+    unread = (unsigned)((unread + len) % BRIDGE_RING);
     return true;
 }
 
-bool Bridge::rawFrame(const uint8_t *out, uint8_t *in, size_t len)
+bool Bridge::rawRead(uint8_t *in, size_t len)
 {
-    if (!rawWriteOnly(out, len))
-        return false;
-    // The reply sits in the ring buffer. It is read in full even when nobody wants it:
-    // the read index only moves when we read, and it has to stay level with the write index.
     for (size_t i = 0; i < len; i++) {
         uint8_t b = 0;
         counters.i2cReads++;
@@ -110,6 +128,32 @@ bool Bridge::rawFrame(const uint8_t *out, uint8_t *in, size_t len)
             return false; // the read index is now unknown: only begin() can recover
         if (in)
             in[i] = b;
+        unread = (unread + BRIDGE_RING - 1) % BRIDGE_RING;
+    }
+    return true;
+}
+
+bool Bridge::levelLocked()
+{
+    if (unread == 0)
+        return true;
+    if (unread <= cfg.readBreakEven)
+        return rawRead(nullptr, unread);
+
+    // Pad: frames the radio answers without doing anything, as long as it takes to bring the
+    // write index round to the read index. ReadBuffer takes any length; the two shortest
+    // leftovers are a status request.
+    uint8_t pad[BRIDGE_MAX_FRAME];
+    while (unread != 0) {
+        size_t n = BRIDGE_RING - unread;
+        if (n > cfg.maxSpiFrame)
+            n = cfg.maxSpiFrame;
+        std::memset(pad, 0x00, n);
+        pad[0] = (n < 3) ? OP_GET_STATUS : OP_READ_BUFFER;
+        if (!rawWriteOnly(pad, n))
+            return false;
+        counters.padBytes += n;
+        clock.sleepUs(cfg.settleUs);
     }
     return true;
 }
@@ -149,8 +193,22 @@ void Bridge::afterFrame(const uint8_t *out, size_t len)
 
 bool Bridge::frame(const uint8_t *out, uint8_t *in, size_t len)
 {
-    if (!rawFrame(out, in, len))
+    if (cfg.skipWriteReplies && !repliesWithData(out[0])) {
+        if (!rawWriteOnly(out, len))
+            return fail();
+        counters.readsSaved += len;
+        // The status clocked out during a write speaks of the command before it, and a driver
+        // that wants to know how this one went asks afterwards. Hand back the mode the radio
+        // was last seen in, with no complaint attached.
+        if (in)
+            std::memset(in, (lastStatus & 0x70) | 0x02, len);
+        afterFrame(out, len);
+        return true;
+    }
+    if (!levelLocked() || !rawWriteOnly(out, len) || !rawRead(in, len))
         return fail();
+    if (in && len > 1)
+        lastStatus = in[1];
     afterFrame(out, len);
     return true;
 }
@@ -196,7 +254,7 @@ bool Bridge::wakeLocked()
     // Any chip-select edge wakes the radio; what the frame says is lost on it.
     const uint8_t nop[2] = {OP_GET_STATUS, 0x00};
     counters.wakes++;
-    if (!rawFrame(nop, nullptr, sizeof(nop)))
+    if (!rawWriteOnly(nop, sizeof(nop)))
         return fail();
     sleeping = false;
     clock.sleepUs(cfg.wakeUs);
@@ -273,8 +331,8 @@ bool Bridge::readIrqLocked(uint16_t &flags)
 {
     const uint8_t cmd[4] = {OP_GET_IRQ, 0x00, 0x00, 0x00};
     uint8_t reply[4] = {0};
-    if (!rawFrame(cmd, reply, sizeof(cmd)))
-        return fail();
+    if (!frame(cmd, reply, sizeof(cmd)))
+        return false;
     flags = (uint16_t)((reply[2] << 8) | reply[3]);
     return true;
 }
@@ -386,6 +444,7 @@ bool Bridge::begin()
     dio1 = 0;
     edgeDelivered = false;
     resetLow = false;
+    unread = 0;
 
     // The ring buffer's two indices are wherever the last user left them. Write a pattern
     // nobody has written before into the radio's data buffer, read it back through the
@@ -447,13 +506,15 @@ bool Bridge::begin()
             matched = (b == pattern[0]) ? 1 : 0;
     }
     counters.syncReads = reads;
+    unread = 0;
 
     // Level now. The radio must answer a status request with something a radio would say.
     uint8_t reply[2] = {0};
-    if (!rawFrame(wake, reply, sizeof(wake)))
+    if (!rawWriteOnly(wake, sizeof(wake)) || !rawRead(reply, sizeof(reply)))
         return fail();
     if (reply[1] == 0x00 || reply[1] == 0xFF)
         return fail();
+    lastStatus = reply[1];
     return true;
 }
 
