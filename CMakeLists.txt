@@ -12,6 +12,7 @@ endif()
 add_compile_options(-Wall -Wextra)
 
 option(PINEDIO_WITH_RADIOLIB "Build what needs RadioLib: its test and the listener" ON)
+option(PINEDIO_RADIOLIB_PARANOID "Let RadioLib ask for the status after every write (two more bytes, 7 ms on this bridge)" OFF)
 set(RADIOLIB_DIR "" CACHE PATH "A RadioLib checkout; fetched from GitHub when empty")
 set(RADIOLIB_TAG "7.7.1" CACHE STRING "RadioLib version fetched when RADIOLIB_DIR is empty")
 
@@ -53,6 +54,9 @@ if(PINEDIO_WITH_RADIOLIB)
   add_library(radiolib-sx126x ${RADIOLIB_SOURCES})
   target_include_directories(radiolib-sx126x PUBLIC ${RADIOLIB_DIR}/src)
   target_compile_options(radiolib-sx126x PRIVATE -w)
+  if(NOT PINEDIO_RADIOLIB_PARANOID)
+    target_compile_definitions(radiolib-sx126x PUBLIC RADIOLIB_SPI_PARANOID=0)
+  endif()
 
   add_executable(test_radiolib test/test_radiolib.cpp)
   target_link_libraries(test_radiolib pinedio-sim radiolib-sx126x)

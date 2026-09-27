@@ -120,6 +120,7 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
     seen.push_back(op);
     for (auto &b : miso)
         b = status();
+    miso[0] |= 0x80; // the byte that goes out under the opcode has its top bit set
     uint64_t busy = 60;
 
     switch (op) {
@@ -255,9 +256,6 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
         break;
     default:
         cmdStatus = 4; // not a command this radio knows
-        for (auto &b : miso)
-            b = status();
-        cmdStatus = 1;
         break;
     }
     clock.advance(durationUs);
@@ -265,7 +263,8 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
     return miso;
 }
 
-Backplate::Backplate(SimClock &c, unsigned seed, uint32_t perByte) : radio(c), clock(c), usPerByte(perByte)
+Backplate::Backplate(SimClock &c, unsigned seed, uint32_t perByte, uint32_t perSpi)
+    : radio(c), clock(c), usPerByte(perByte), usPerSpi(perSpi)
 {
     std::mt19937 gen(seed);
     for (auto &b : ring)
@@ -280,9 +279,25 @@ void Backplate::plantStale(const std::vector<uint8_t> &bytes, unsigned ahead)
         ring[(readIndex + ahead + i) % 128] = bytes[i];
 }
 
+void Backplate::flush()
+{
+    // tiny-i2c-spi learns that a write is over when the next transaction starts, and clocks
+    // the frame out then, holding that transaction up until it is done.
+    if (pending.empty())
+        return;
+    const std::vector<uint8_t> mosi = pending;
+    pending.clear();
+    const std::vector<uint8_t> miso = radio.spiFrame(mosi, (uint64_t)usPerSpi * mosi.size());
+    for (uint8_t b : miso) {
+        ring[writeIndex] = b;
+        writeIndex = (uint8_t)((writeIndex + 1) % 128);
+    }
+}
+
 bool Backplate::write(const uint8_t *data, size_t len)
 {
     writeCount++;
+    flush();
     clock.advance(100 + (uint64_t)usPerByte * (len + 1));
     if (writeFaults) {
         writeFaults--;
@@ -296,18 +311,14 @@ bool Backplate::write(const uint8_t *data, size_t len)
     }
     if (len < 2 || data[0] != 0x01)
         return true; // configure, or nothing: no SPI traffic
-    const std::vector<uint8_t> mosi(data + 1, data + len);
-    const std::vector<uint8_t> miso = radio.spiFrame(mosi, 40ULL * mosi.size()); // the ATtiny bit-bangs SPI
-    for (uint8_t b : miso) {
-        ring[writeIndex] = b;
-        writeIndex = (uint8_t)((writeIndex + 1) % 128);
-    }
+    pending.assign(data + 1, data + len);
     return true;
 }
 
 bool Backplate::readByte(uint8_t &out)
 {
     readCount++;
+    flush();
     clock.advance(100 + 2ULL * usPerByte);
     if (readFaults) {
         readFaults--;

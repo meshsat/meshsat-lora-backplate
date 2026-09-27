@@ -81,7 +81,41 @@ TEST(sync_lines_up_from_any_ring_position)
         uint8_t out[2] = {0xC0, 0}, in[2] = {0};
         CHECK(bridge.transfer(out, in, 2));
         CHECK_EQ(in[1], 0x22); // standby, no error: the reply is this frame's, not an old one
+        CHECK_EQ(in[0], 0xA2); // and under the opcode, the same with the top bit set
+        CHECK(!plate.framePending());
     }
+}
+
+TEST(sync_wakes_a_radio_that_was_left_asleep)
+{
+    for (uint32_t spi : {3450u, 40u}) {
+        SimClock clock;
+        Backplate plate(clock, 5, 25, spi);
+        {
+            Bridge first(plate, clock);
+            CHECK(first.begin());
+            const uint8_t sleep[2] = {0x84, 0x00};
+            CHECK(first.transfer(sleep, nullptr, sizeof(sleep)));
+            CHECK_EQ(plate.radio.mode(), sim::ModeSleep);
+        }
+        Bridge second(plate, clock); // a new process, knowing nothing
+        CHECK(second.begin());
+        CHECK_EQ(plate.radio.mode(), sim::ModeStandbyRc);
+        CHECK_EQ(plate.radio.busyViolations(), 0);
+        CHECK_EQ(plate.unread(), 0);
+    }
+}
+
+TEST(a_command_has_reached_the_radio_when_transfer_returns)
+{
+    SimClock clock;
+    Backplate plate(clock, 6);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    const uint8_t rx[4] = {0x82, 0xFF, 0xFF, 0xFF};
+    CHECK(bridge.transfer(rx, nullptr, sizeof(rx)));
+    CHECK(!plate.framePending()); // not waiting in the bridge for somebody to speak next
+    CHECK_EQ(plate.radio.mode(), sim::ModeRx);
 }
 
 TEST(sync_is_not_fooled_by_the_pattern_of_an_earlier_driver)
@@ -139,8 +173,8 @@ TEST(every_buffer_length_survives_the_trip)
             break;
     }
     CHECK_EQ(plate.oversize(), 0);
-    CHECK(plate.longestWrite() <= 97);        // 96 SPI bytes and the bridge's command byte
-    CHECK(plate.radio.longestFrame() <= 96);
+    CHECK(plate.longestWrite() <= 121);       // 120 SPI bytes and the bridge's command byte
+    CHECK(plate.radio.longestFrame() <= 120);
     CHECK_EQ(plate.radio.busyViolations(), 0);
     CHECK(level(bridge, plate));
     CHECK(bridge.stats().split > 0);
@@ -218,7 +252,7 @@ TEST(a_long_command_that_cannot_be_split_is_refused)
     Bridge bridge(plate, clock);
     CHECK(bridge.begin());
     const unsigned before = plate.radio.frames();
-    std::vector<uint8_t> out(100, 0x00);
+    std::vector<uint8_t> out(125, 0x00);
     out[0] = 0x8B; // SetModulationParams is never this long
     CHECK(!bridge.transfer(out.data(), nullptr, out.size()));
     CHECK_EQ(plate.radio.frames(), before);
@@ -244,117 +278,13 @@ TEST(the_ring_stays_level_over_thousands_of_frames)
     CHECK_EQ(plate.radio.busyViolations(), 0);
 }
 
-TEST(the_reply_to_a_command_that_only_writes_is_never_read)
-{
-    SimClock clock;
-    Backplate plate(clock, 73);
-    Bridge bridge(plate, clock);
-    CHECK(bridge.begin());
-    const unsigned readsBefore = plate.reads();
-    const uint8_t freq[5] = {0x86, 0x36, 0x58, 0x66, 0x66};
-    uint8_t in[5] = {0};
-    for (int i = 0; i < 40; i++)
-        CHECK(bridge.transfer(freq, in, sizeof(freq)));
-    CHECK_EQ(plate.reads(), readsBefore);
-    CHECK_EQ(in[1], 0x22); // the status the radio gave when it was last asked
-    CHECK(writeBuffer(bridge, 0, ramp(255)));
-    CHECK_EQ(plate.reads(), readsBefore);
-    CHECK(bridge.stats().readsSaved >= 40 * 5 + 257);
-
-    // and the next reply that matters is still the right one
-    CHECK(readBuffer(bridge, 0, 255) == ramp(255));
-    CHECK_EQ(readRegister(bridge, 0x0740), 0x14);
-    CHECK(level(bridge, plate));
-    CHECK_EQ(plate.radio.busyViolations(), 0);
-}
-
-TEST(a_stale_complaint_is_not_pinned_on_the_next_write)
-{
-    SimClock clock;
-    Backplate plate(clock, 97);
-    Bridge bridge(plate, clock);
-    CHECK(bridge.begin());
-    uint8_t bogus[3] = {0x55, 0, 0}, in[3] = {0}; // not a command: the radio answers "invalid"
-    CHECK(bridge.transfer(bogus, in, sizeof(bogus)));
-    uint8_t status[2] = {0xC0, 0}, reply[2] = {0};
-    CHECK(bridge.transfer(status, reply, 2));
-    const uint8_t freq[5] = {0x86, 0x36, 0x58, 0x66, 0x66};
-    uint8_t out[5] = {0};
-    CHECK(bridge.transfer(freq, out, sizeof(freq)));
-    CHECK_EQ((out[1] >> 1) & 7, 1);  // no complaint
-    CHECK_EQ((out[1] >> 4) & 7, 2);  // standby, as last seen
-}
-
-TEST(the_ring_is_levelled_from_every_leftover)
-{
-    for (unsigned leftover = 1; leftover < 128; leftover++) {
-        SimClock clock;
-        Backplate plate(clock, 79 + leftover);
-        Bridge bridge(plate, clock);
-        CHECK(bridge.begin());
-        // leave exactly `leftover` reply bytes unread, in write-only frames of mixed length
-        unsigned left = leftover;
-        while (left) {
-            const unsigned n = left > 60 ? 60 : left;
-            std::vector<uint8_t> out(n, 0x00);
-            out[0] = n >= 2 ? 0x0E : 0x80; // WriteBuffer, or a bare SetStandby opcode
-            CHECK(bridge.transfer(out.data(), nullptr, n));
-            left -= n;
-        }
-        CHECK_EQ(plate.unread(), leftover);
-        const unsigned readsBefore = plate.reads();
-        const uint8_t sync[5] = {0x0D, 0x07, 0x40, 0x24, (uint8_t)leftover};
-        CHECK(bridge.transfer(sync, nullptr, sizeof(sync)));
-        CHECK_EQ(readRegister(bridge, 0x0741), leftover);
-        // reading is only chosen when it is the cheaper way
-        const unsigned spent = plate.reads() - readsBefore;
-        CHECK(spent <= 5 + 3);
-        CHECK_EQ(plate.unread(), 0);
-        CHECK_EQ(plate.radio.busyViolations(), 0);
-        CHECK_EQ(plate.oversize(), 0);
-    }
-}
-
-TEST(padding_is_made_of_commands_the_radio_knows)
-{
-    SimClock clock;
-    Backplate plate(clock, 83);
-    Config cfg;
-    cfg.maxSpiFrame = 32; // padding has to come in several frames
-    Bridge bridge(plate, clock, cfg);
-    CHECK(bridge.begin());
-    CHECK(writeBuffer(bridge, 0, ramp(10)));
-    CHECK(readBuffer(bridge, 0, 10) == ramp(10));
-    CHECK(bridge.stats().padBytes > 0);
-    for (uint8_t op : plate.radio.opcodes())
-        CHECK(op == 0xC0 || op == 0x80 || op == 0x8F || op == 0x0E || op == 0x1E);
-    CHECK(plate.radio.longestFrame() <= 32);
-    CHECK_EQ(readRegister(bridge, 0x0740), 0x14); // padding wrote nothing anywhere
-    CHECK(readBuffer(bridge, 0, 10) == ramp(10));
-}
-
-TEST(every_reply_can_still_be_read_when_asked)
-{
-    SimClock clock;
-    Backplate plate(clock, 89);
-    Config cfg;
-    cfg.skipWriteReplies = false;
-    Bridge bridge(plate, clock, cfg);
-    CHECK(bridge.begin());
-    const unsigned readsBefore = plate.reads();
-    const uint8_t freq[5] = {0x86, 0x36, 0x58, 0x66, 0x66};
-    uint8_t in[5] = {0};
-    CHECK(bridge.transfer(freq, in, sizeof(freq)));
-    CHECK_EQ(plate.reads(), readsBefore + 5);
-    CHECK_EQ(plate.unread(), 0);
-    CHECK_EQ(bridge.stats().padBytes, 0);
-}
-
 TEST(dio1_edge_is_delivered_once_per_event)
 {
     SimClock clock;
     Backplate plate(clock, 29);
-    Bridge bridge(plate, clock);
+    Config cfg;
+    cfg.statusPoll = false; // every poll fetches the flags: the line as a wire would carry it
+    Bridge bridge(plate, clock, cfg);
     CHECK(bridge.begin());
     irqCount = 0;
     bridge.attachInterrupt(Bridge::PinIrq, onIrq);
@@ -485,8 +415,9 @@ TEST(reset_line_is_a_cold_restart)
 
 TEST(calibration_and_mode_changes_never_meet_a_busy_radio)
 {
+  for (uint32_t spi : {3450u, 40u, 2u}) {
     SimClock clock;
-    Backplate plate(clock, 53, 3); // a bus far faster than the phone's
+    Backplate plate(clock, 53, 3, spi); // a bus, and a bridge, far faster than the real ones
     Bridge bridge(plate, clock);
     CHECK(bridge.begin());
     const uint8_t seq[][5] = {{0x89, 0x7F}, {0x98, 0xD7, 0xDB}, {0x80, 0x01}, {0xC1}, {0x82, 0xFF, 0xFF, 0xFF}, {0x80, 0x00},
@@ -496,6 +427,116 @@ TEST(calibration_and_mode_changes_never_meet_a_busy_radio)
         for (size_t i = 0; i < sizeof(len) / sizeof(len[0]); i++)
             CHECK(bridge.transfer(seq[i], nullptr, len[i]));
     CHECK_EQ(plate.radio.busyViolations(), 0);
+  }
+}
+
+TEST(a_quiet_radio_is_polled_by_its_status_byte_alone)
+{
+    SimClock clock;
+    Backplate plate(clock, 101);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    irqCount = 0;
+    bridge.attachInterrupt(Bridge::PinIrq, onIrq);
+    startReceiving(bridge);
+    CHECK(!bridge.pollOnce()); // the first poll after a command fetches the flags
+    CHECK_EQ(bridge.stats().polls, 1);
+    const unsigned frames = plate.radio.frames();
+    for (int i = 0; i < 5; i++)
+        CHECK(!bridge.pollOnce());
+    CHECK_EQ(bridge.stats().polls, 1);
+    CHECK_EQ(bridge.stats().quickPolls, 5);
+    CHECK_EQ(plate.radio.frames(), frames + 5);
+    CHECK_EQ(plate.radio.longestFrame() >= 1, 1);
+
+    CHECK(plate.radio.injectRx(ramp(25))); // the status now says data is waiting
+    CHECK(bridge.pollOnce());
+    CHECK_EQ(irqCount.load(), 1);
+    CHECK_EQ(bridge.stats().polls, 2);
+    CHECK(!bridge.pollOnce()); // still waiting, already told
+    CHECK_EQ(bridge.stats().polls, 2);
+    CHECK_EQ(plate.unread(), 0);
+    CHECK_EQ(plate.radio.busyViolations(), 0);
+}
+
+TEST(an_event_that_leaves_the_status_alone_is_found_by_the_slow_poll)
+{
+    SimClock clock;
+    Backplate plate(clock, 103);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    irqCount = 0;
+    bridge.attachInterrupt(Bridge::PinIrq, onIrq);
+    startReceiving(bridge, sim::IrqRxDone | sim::IrqHeaderErr);
+    CHECK(!bridge.pollOnce());
+    plate.radio.raiseQuietly(sim::IrqHeaderErr); // a header that failed its check: the radio listens on
+    int polls = 0;
+    const uint64_t t0 = clock.nowUs();
+    while (irqCount.load() == 0 && polls++ < 200) {
+        clock.advance(20000);
+        bridge.pollOnce();
+    }
+    CHECK_EQ(irqCount.load(), 1);
+    CHECK(clock.nowUs() - t0 <= 150000); // within the slow poll's period and a bit
+    CHECK(bridge.stats().quickPolls > 0);
+}
+
+TEST(looking_at_the_line_does_not_swallow_the_edge)
+{
+    SimClock clock;
+    Backplate plate(clock, 109);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    irqCount = 0;
+    bridge.attachInterrupt(Bridge::PinIrq, onIrq);
+    startReceiving(bridge);
+    CHECK(!bridge.pollOnce());
+    CHECK(plate.radio.injectRx(ramp(25)));
+    CHECK_EQ(bridge.digitalRead(Bridge::PinIrq), 1); // a driver looks before the poller does
+    CHECK_EQ(bridge.digitalRead(Bridge::PinIrq), 1);
+    CHECK(bridge.pollOnce());
+    CHECK_EQ(irqCount.load(), 1);
+}
+
+TEST(a_second_frame_behind_an_unchanged_status_waits_no_longer_than_the_slow_poll)
+{
+    SimClock clock;
+    Backplate plate(clock, 113);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    irqCount = 0;
+    bridge.attachInterrupt(Bridge::PinIrq, onIrq);
+    startReceiving(bridge);
+    CHECK(!bridge.pollOnce());
+    CHECK(plate.radio.injectRx(ramp(20)));
+    CHECK(bridge.pollOnce());
+    const uint8_t clear[3] = {0x02, 0xFF, 0xFF};
+    CHECK(bridge.transfer(clear, nullptr, sizeof(clear)));
+    CHECK(!bridge.pollOnce()); // flags fetched, baseline taken: the status still says "data"
+    CHECK(plate.radio.injectRx(ramp(21)));
+    const uint64_t t0 = clock.nowUs();
+    for (int i = 0; i < 50 && irqCount.load() < 2; i++) {
+        clock.advance(20000);
+        bridge.pollOnce();
+    }
+    CHECK_EQ(irqCount.load(), 2);
+    CHECK(clock.nowUs() - t0 <= 150000);
+}
+
+TEST(the_status_poll_can_be_switched_off)
+{
+    SimClock clock;
+    Backplate plate(clock, 107);
+    Config cfg;
+    cfg.statusPoll = false;
+    Bridge bridge(plate, clock, cfg);
+    CHECK(bridge.begin());
+    bridge.attachInterrupt(Bridge::PinIrq, onIrq);
+    startReceiving(bridge);
+    for (int i = 0; i < 5; i++)
+        bridge.pollOnce();
+    CHECK_EQ(bridge.stats().polls, 5);
+    CHECK_EQ(bridge.stats().quickPolls, 0);
 }
 
 TEST(an_unacknowledged_write_is_repeated)

@@ -58,6 +58,8 @@ class Sx1262
     /// A packet arriving on air. False when the radio is not receiving.
     bool injectRx(const std::vector<uint8_t> &payload, int rssiDbm = -60, int snrDb = 8);
     void setChannelBusy(bool busy) { channelBusy = busy; }
+    /// Set interrupt flags without touching mode or command status, as a bad header does.
+    void raiseQuietly(uint16_t flags) { raise(flags); }
 
     Mode mode() const { return chipMode; }
     uint16_t irqStatus() const { return irq; }
@@ -100,8 +102,9 @@ class Sx1262
 class Backplate : public I2cPort
 {
   public:
-    /// I2C at 400 kHz by default: the faster the bus, the less the bridge hides BUSY by accident.
-    explicit Backplate(SimClock &c, unsigned seed = 1, uint32_t usPerByte = 25);
+    /// usPerI2cByte: 25 is a 400 kHz bus. usPerSpiByte: 3450 is the bridge as it ships, 40 one
+    /// with a quiet firmware. The faster both are, the less BUSY is hidden by accident.
+    explicit Backplate(SimClock &c, unsigned seed = 1, uint32_t usPerI2cByte = 25, uint32_t usPerSpiByte = 3450);
 
     bool write(const uint8_t *data, size_t len) override;
     bool readByte(uint8_t &out) override;
@@ -116,11 +119,17 @@ class Backplate : public I2cPort
     unsigned reads() const { return readCount; }
     unsigned longestWrite() const { return longestWr; }
     unsigned oversize() const { return tooLong; }
-    unsigned unread() const { return (uint8_t)(writeIndex - readIndex) % 128; }
+    unsigned unread() const { return (uint8_t)(writeIndex - readIndex + 128) % 128; }
+    /// A frame written and not yet clocked out: the bridge does that when it is next spoken to.
+    bool framePending() const { return !pending.empty(); }
 
   private:
+    void flush();
+
     SimClock &clock;
     uint32_t usPerByte;
+    uint32_t usPerSpi;
+    std::vector<uint8_t> pending;
     std::array<uint8_t, 128> ring{};
     uint8_t writeIndex = 0, readIndex = 0;
     unsigned writeFaults = 0, readFaults = 0;

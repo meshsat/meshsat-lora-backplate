@@ -156,15 +156,33 @@ int main(int argc, char **argv)
     ok = bridge.transfer(out, in, 2);
     report(ok && ((in[1] >> 4) & 7) == 2, "radio left in standby");
 
+    // The status byte under the opcode of a one-byte request against the one a full request gives.
+    {
+        LinuxI2cPort &raw = port;
+        const uint8_t one[2] = {0x01, 0xC0};
+        uint8_t under = 0;
+        ok = bridge.transfer(out, in, 2) && raw.write(one, sizeof(one)) && raw.readByte(under);
+        std::snprintf(line, sizeof(line), "0x%02x under the opcode, 0x%02x when asked in full", under, in[1]);
+        report(ok && (under & 0x7E) == (in[1] & 0x7E), "status in one byte", line);
+    }
+
     const uint8_t dio[9] = {0x08, 0x02, 0x02, 0x00, 0x02, 0, 0, 0, 0};
     ok = bridge.transfer(dio, nullptr, sizeof(dio));
-    const int polls = 200;
+    const int polls = 100;
+    Stats before = bridge.stats();
     t0 = clock.nowUs();
     for (int i = 0; i < polls && ok; i++)
         bridge.pollOnce();
-    const double perPoll = (clock.nowUs() - t0) / 1000.0 / polls;
-    std::snprintf(line, sizeof(line), "%.2f ms each", perPoll);
-    report(ok && !bridge.inError(), "interrupt status poll", line);
+    double perPoll = (clock.nowUs() - t0) / 1000.0 / polls;
+    Stats after = bridge.stats();
+    std::snprintf(line, sizeof(line), "%.2f ms each (%llu by status, %llu in full)", perPoll,
+                  (unsigned long long)(after.quickPolls - before.quickPolls), (unsigned long long)(after.polls - before.polls));
+    report(ok && !bridge.inError(), "interrupt poll, two-stage", line);
+    t0 = clock.nowUs();
+    for (int i = 0; i < 20 && ok; i++)
+        bridge.digitalRead(Bridge::PinIrq);
+    std::snprintf(line, sizeof(line), "%.2f ms each", (clock.nowUs() - t0) / 1000.0 / 20);
+    report(ok && !bridge.inError(), "interrupt poll, flags fetched every time", line);
     const uint8_t noDio[9] = {0x08, 0, 0, 0, 0, 0, 0, 0, 0};
     bridge.transfer(noDio, nullptr, sizeof(noDio));
 
@@ -193,11 +211,9 @@ int main(int argc, char **argv)
     report(ok, "commands to set up a receive, without starting one", line);
 
     const Stats s = bridge.stats();
-    std::printf("frames %llu, SPI bytes %llu, I2C writes %llu, I2C reads %llu, reads saved %llu, padding %llu bytes, "
-                "retries %llu, errors %llu\n",
+    std::printf("frames %llu, SPI bytes %llu, I2C writes %llu, I2C reads %llu, retries %llu, errors %llu\n",
                 (unsigned long long)s.frames, (unsigned long long)s.spiBytes, (unsigned long long)s.i2cWrites,
-                (unsigned long long)s.i2cReads, (unsigned long long)s.readsSaved, (unsigned long long)s.padBytes,
-                (unsigned long long)s.retries, (unsigned long long)s.errors);
+                (unsigned long long)s.i2cReads, (unsigned long long)s.retries, (unsigned long long)s.errors);
     std::printf("%s\n", failed ? "SELFTEST FAILED" : "SELFTEST PASSED");
     return failed ? 1 : 0;
 }

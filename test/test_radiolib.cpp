@@ -27,8 +27,8 @@ struct Bench {
     Module module;
     SX1262 radio;
 
-    explicit Bench(unsigned seed, size_t frame = 96)
-        : plate(clock, seed), bridge(plate, clock, config(frame)), hal(bridge, clock, false),
+    explicit Bench(unsigned seed, size_t frame = 120, uint32_t usPerSpiByte = 3450)
+        : plate(clock, seed, 25, usPerSpiByte), bridge(plate, clock, config(frame)), hal(bridge, clock, false),
           module(&hal, Bridge::PinCs, Bridge::PinIrq, Bridge::PinReset, Bridge::PinBusy), radio(&module)
     {
     }
@@ -179,6 +179,30 @@ TEST(a_frame_is_handed_to_the_radio_for_transmission)
         CHECK(b.plate.radio.transmitted().back() == frame);
     }
     CHECK_EQ(b.plate.radio.busyViolations(), 0);
+}
+
+TEST(the_whole_round_on_a_bridge_with_a_quiet_firmware)
+{
+    // An ATtiny reflashed without its debug output is some eighty times faster on the SPI
+    // side. Nothing may depend on the bridge being slow.
+    Bench b(139, 120, 40);
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    irqCount = 0;
+    b.radio.setDio1Action(onIrq);
+    for (int i = 1; i <= 20; i++) {
+        CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
+        const std::vector<uint8_t> frame = meshtasticFrame((size_t)(i * 11));
+        CHECK(b.plate.radio.injectRx(frame));
+        CHECK(b.bridge.pollOnce());
+        std::vector<uint8_t> got(b.radio.getPacketLength());
+        CHECK_EQ(b.radio.readData(got.data(), got.size()), RADIOLIB_ERR_NONE);
+        CHECK(got == frame);
+        CHECK_EQ(b.radio.scanChannel(), RADIOLIB_CHANNEL_FREE);
+    }
+    CHECK_EQ(b.radio.sleep(), RADIOLIB_ERR_NONE);
+    CHECK_EQ(b.radio.standby(), RADIOLIB_ERR_NONE);
+    CHECK_EQ(b.plate.radio.busyViolations(), 0);
+    CHECK(b.level());
 }
 
 TEST(sleep_and_standby_as_the_driver_does_them)
