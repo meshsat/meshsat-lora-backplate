@@ -1,6 +1,6 @@
 # The back cover, as verified on the phone
 
-Bench of 27 September 2026: a PinePhone Pro running Mobian (Debian 13, kernel 6.12-rockchip, Tow-Boot 2021.10 in SPI) with the Pine64 LoRa back cover, and a T-Deck Plus, a T-Beam and a T-Deck Pro as Meshtastic nodes on EU_868 LongFast. Everything below was observed on that bench unless marked *from source*.
+Bench of 27 September 2026: a PinePhone Pro running Mobian (Debian 13, kernel 6.12-rockchip, Tow-Boot 2021.10 in SPI) with the Pine64 LoRa back cover, and a T-Deck Plus, a T-Beam and a T-Deck Pro as Meshtastic nodes on EU_868 LongFast. Everything below was observed on that bench unless marked *from source*. Every frame behind the transmit figures is in [`data/`](data/), one line each with its verdict; the sender-side record of the first transmit session was lost, and what is said of that session is marked as reconstructed.
 
 ## Where the cover is
 
@@ -112,49 +112,132 @@ The first is the T-Deck, the second the T-Beam. The second is longer than one br
 
 ## Transmitting
 
-`lora-ping` sends Meshtastic-shaped frames of a chosen length and power. A T-Deck Pro two metres away, its firmware log read over USB, said of every frame whether it arrived intact or with a checksum error (`error=-7`). A frame that failed was still heard, and rejected for its checksum.
+**State on 27 September 2026: not solved, and nothing in this section is a qualified setting.** A frame of 32 bytes is accepted at every power tried. From a rested radio, frames of the lengths the daemon really sends, 90 to 176 bytes, are refused with a checksum error at 5 dBm and above, whatever the preamble. An earlier version of this page said a long preamble fixes this. It does not: see "What went wrong with the first conclusion" below.
 
-| Preamble | Power | Frames that arrived intact |
-|---|---|---|
-| 16 symbols, Meshtastic's usual | 10 dBm | up to about 76 bytes |
-| 16 symbols | 22 dBm | up to 32 bytes |
-| 16 symbols | 0 dBm | 116 and 122 bytes did not |
-| 16 symbols, coding rate 4/8 | 22 dBm | 76 and 126 bytes did not |
-| 96 symbols | 22 dBm | 126 bytes did not |
-| 128 and 160 symbols | 22 dBm | 126 bytes did |
-| 200 symbols | 10 and 22 dBm | every length tried, up to 216 bytes |
+### How it is measured
 
-**The back cover needs a long preamble to send anything longer than a short frame.** The radio runs on a plain crystal, not a TCXO. What fits the numbers is that the crystal drifts while the transmitter starts, that the receiver locks at the end of the preamble, and that with a long preamble the drift is over by then. Nobody has measured the frequency itself. Less power helps a little and does not cure it; a stronger coding rate does not help; keeping the bridge silent while the frame is on the air (`--quiet-tx`) changes nothing, so the bridge's traffic is not the cause.
+`lora-ping` sends frames with a Meshtastic header and a random payload, on a channel hash no node uses, hop limit 0. A T-Deck Pro about two metres away writes its firmware log to a file, and `tools/bench/verdict.py` gives every frame exactly one verdict from that log:
 
-A receiver accepts a preamble of any length, so the other nodes need no change. The price is time on air: 160 symbols at SF11 and 250 kHz are 1.3 s for every packet, against 0.13 s for 16.
+| Verdict | What it takes |
+|---|---|
+| accepted | A complete `Lora RX` line with the frame's packet id and length, at the time the frame was on the air. The receiver's checksum passed. **The content is not compared.** |
+| refused | A complete `Ignore received packet due to error=-7` line with the frame's id. The id in such a line comes from a damaged frame and is tentative. |
+| no verdict | The capture was not running, the receiver was sending at that moment, or the log contradicts itself. Such a frame counts neither for the radio nor against it. |
 
-This matters more than it looks, because firmware 2.8 signs every broadcast and the signature is 66 bytes. The same short text that leaves a T-Deck as a frame of 30 bytes leaves the daemon as one of 106, over the limit of the usual preamble.
+One receiver, one evening, one unit, the phone not fixed in place. The counts are small: 4 accepted out of 4 still allows a true rate as low as 47 %, and none out of 12 allows one as high as 22 % (one-sided, 95 %). None of this is a reliability figure.
+
+### From a rested radio
+
+Single frames and pairs, at least 14 s after the previous transmission. Accepted / judged.
+
+Preamble of 160 to 320 symbols:
+
+| Frame length | -9 dBm | 0 dBm | 5 dBm | 10 dBm | 14 dBm | 22 dBm |
+|---|---:|---:|---:|---:|---:|---:|
+| 32 bytes | | | | | 2 / 2 | |
+| 76 bytes | | | | | 0 / 2 | |
+| 126 bytes | 1 / 1 | 4 / 4 | 0 / 1 | 0 / 1 | 0 / 4 | 0 / 2 |
+| 192 bytes | 2 / 4 | 0 / 4 | 0 / 1 | 0 / 1 | 0 / 12 | |
+| 237 bytes | 0 / 2 | 0 / 2 | | | | |
+
+Preamble of 16 symbols, Meshtastic's usual:
+
+| Frame length | 0 dBm | 10 dBm | 14 dBm | 22 dBm |
+|---|---:|---:|---:|---:|
+| 32 bytes | | | 2 / 2 | 2 / 2 |
+| 76 bytes | | 2 / 2 | 0 / 2 | |
+| 126 bytes | 0 / 1 | | | |
+| 192 bytes | 0 / 1 | | | |
+
+Thirteen more frames have no verdict: twelve went out while the capture was not running, one while the receiver itself was sending. At 14 dBm and 192 bytes the preamble was 160, 200, 256 and 320 symbols (7, 1, 2 and 2 frames judged).
+
+### Frames in a row
+
+| Run, frames about 5 s apart | Verdicts in order |
+|---|---|
+| Ten frames of 126 bytes, 22 dBm, preamble 200 | refused, refused, refused, refused, then six accepted |
+| Straight after it, two frames of 126 bytes, 22 dBm, preamble 16 | refused, refused |
+| Eight frames of 126 bytes, -9 dBm, preamble 200 | all eight accepted |
+| Straight after it, one frame of 192 bytes, 14 dBm, preamble 160 | refused |
+| Four frames of 192 bytes, 0 dBm, preamble 200, 15 s of receive between them | refused, refused, accepted, accepted |
+
+The last run was interrupted after its fourth frame and its own output was lost. What is known of it is what the receiver logged.
+
+### What the receiver says about the frequency
+
+The T-Deck Pro logs a frequency offset for every packet it accepts. It is the receiver's own estimate, not a calibrated measurement, it exists only for accepted packets, and it tells how far a transmitter moved between two frames, not within one.
+
+| Transmitter | Offset seen by the same receiver |
+|---|---|
+| T-Deck Plus | 239 to 247 Hz, five packets over three hours |
+| T-Beam | 658 Hz, one packet |
+| Back cover, rested, 0 dBm and below | 4254 to 4300 Hz |
+| Back cover, ten frames at 22 dBm | rising to 5461 Hz; from the fifth frame on, the first accepted, by 48, 37, 33, 23 and 23 Hz from frame to frame |
+| Back cover, eight frames at -9 dBm | 4413 Hz rising to 4603 Hz, by 66, 39, 25, 21, 14, 14 and 12 Hz from frame to frame |
+| Back cover, earlier session, frames in a steady row at full power | 5709 to 5748 Hz, moving 0 to 8 Hz from frame to frame, once 21 Hz |
+
+So the other nodes stand still and the back cover's transmitter moves by more than 1 ppm with what it has just been doing. Semtech's datasheet for the SX1261/2 (revision 1.2, section 4.1.2) gives the drift a LoRa receiver tolerates over one packet, without low data rate optimisation, as bandwidth / (3 x 2^SF): 40.7 Hz at SF11 and 250 kHz, which is 0.047 ppm at this frequency. Semtech's application note AN1200.37 describes a crystal next to a power amplifier drifting from its heat, and recommends a TCXO or thermal relief for it. This cover has a crystal.
+
+**What is established and what is not.** Established: the frequency moves with the transmit history, and long frames are refused while it moves quickly. Not established: that this movement is what damages the frames, how it divides between the amplifier's heat, the supply and the oscillator starting, and what happens inside one frame. No frequency, temperature or supply voltage was measured directly.
+
+### The power that is asked for and the power that arrives
+
+| Asked for | Frames heard | Median RSSI at the receiver | Amplifier setting RadioLib chooses (duty cycle, hpMax, value given to SetTxParams) |
+|---:|---:|---:|---|
+| -9 dBm | 14 | -84 dBm | 2, 2, -5 |
+| 0 dBm | 16 | -75 dBm | 2, 1, 11 |
+| 5 dBm | 2 | -70 dBm | 2, 2, 11 |
+| 10 dBm | 4 | -61 dBm | 1, 2, 22 |
+| 14 dBm | 25 | -59 dBm | 1, 4, 20 |
+| 22 dBm | 16 | -54 dBm | 4, 7, 22 |
+
+RadioLib does not scale one amplifier setting: by default it takes a different amplifier configuration for every dBm from a table meant to save current, in the tool and in the daemon alike. The steps at the receiver are uneven (9 dB more from 5 to 10 dBm, 2 dB more from 10 to 14). Whether that is this table on this board, the supply, or the receiver's reading is not known. The reported signal-to-noise ratio does not tell an accepted frame from a refused one: the median is 4.75 dB for both.
+
+### What went wrong with the first conclusion
+
+Between 19:58 and 20:12 the same tool sent about seventy frames in dense succession. After nine minutes of that, 19 out of 20 frames of 76 to 216 bytes were accepted that the reconstruction assigns to preambles of 128, 160 and 200 symbols, and the frames of 126 bytes and more that it assigns to 16 and 96 symbols were not. The conclusion written here that evening was that a long preamble lets the crystal settle. The experiment was confounded: the radio had been transmitting a third of the time for minutes, and the receiver's offsets show its frequency had stopped moving by then. After a power cycle and from a rested radio the same settings failed. The sender-side record of that session was lost with a temporary directory; what is said about it here is reconstructed from the receiver's log.
+
+What stands of it: with the radio in a steady state, a preamble of 16 symbols was refused where one of 128 or more was accepted.
 
 ## The daemon
 
-Meshtastic's daemon, built from the MeshSat firmware with `env:meshsat-pinephone-pro`, drove the radio through the bridge for the first time on 27 September 2026. With the usual preamble and continuous receive:
+Meshtastic's daemon, built from the MeshSat firmware with `env:meshsat-pinephone-pro`, drove the radio through the bridge for the first time on 27 September 2026.
 
-- it received and decoded a text from the T-Deck Pro;
-- its traceroute to the T-Deck Pro came back after 1.3 s, with the signal reports of both ends in it: a full round trip;
-- its own texts reached the T-Deck Pro damaged, which is what led to the table above. Traceroutes are short and got through.
+What it sent, from its own log, 16 bytes of header included:
 
-A node that never had a region makes its keys when it gets one, and takes its node number from them. Over the bridge that took 108 s. `tools/node-setup/set-channels.py` sets the region first, waits for the node to come back under its new number, and only then sets the rest.
+| Packet | On the air | Verdict at the T-Deck Pro |
+|---|---:|---|
+| Traceroute request and its routing packet | 22 and 29 bytes | No firmware log was kept at that moment. A Meshtastic client on the T-Deck Pro showed both packets decoded, and the answer came back to the phone after 1.3 s |
+| Text of 2 characters, broadcast, sent three times | 90 bytes | refused, all three |
+| Text of 66 characters, broadcast, sent three times | 154 bytes | refused, all three |
+| Two more broadcasts, sent three times each | 132 and 145 bytes | no firmware log was kept; the client showed neither |
+| Node announcement, preamble 160, 14 dBm | 176 bytes | refused |
 
-**The long preamble is for sending only.** Meshtastic hands its preamble length to RadioLib's duty-cycled receive, which sleeps the radio for as long as the preamble allows. With 16 symbols that is no sleep at all. With 160 it is 1.2 s of sleep in every 1.25 s, in which the radio misses its neighbours, whose preamble is still 16 symbols, and in which every poll through the bridge wakes it and reads rubbish. The first build with the long preamble did exactly that: in 90 s it reported 15 packets, all of them bad, among them its own last transmission read back from the radio's buffer, and it restarted the radio four times. Behind this bridge the radio has to receive continuously.
+Those were sent with 16 symbols of preamble at 22 dBm, the announcement excepted. A broadcast text of N characters is N + 88 bytes on the air, because firmware 2.8 signs every broadcast it originates and the signature takes 66 bytes. A text to one node is not signed.
+
+What is proven with the daemon: it received and decoded a text from the T-Deck Pro, and its traceroute went there and back. **A text sent by the daemon has not been read on another node.**
+
+A node that never had a region makes its keys when it gets one, and takes its node number from them. Over the bridge that took 108 s; how that time divides between the processor, the entropy and the bridge was not measured. `tools/node-setup/set-channels.py` sets the region first, waits for the node to come back under its new number, and only then sets the rest.
+
+**The preamble the daemon sends with must not be the one it receives with.** Meshtastic hands its preamble length to RadioLib's duty-cycled receive, which sleeps the radio for as long as that preamble allows. With 16 symbols that is no sleep at all. With 160 it is 1.18 s of sleep in every 1.25 s, in which the radio misses its neighbours, whose preamble is still 16 symbols, and in which every poll through the bridge wakes it and reads rubbish. The first build with the long preamble did exactly that: in 90 s it reported 15 packets, all of them bad, among them its own last transmission read back from the radio's buffer, and it restarted the radio four times. The build after it receives continuously. It ran for 100 s without a bad packet or a restart; no neighbour sent anything in those 100 s, so that it receives is not proven again yet.
+
+**Before it sends, the daemon stops the crystal.** From the source: it leaves receive for standby, scans the channel, falls back to standby and loads the frame. RadioLib's standby is the one on the RC oscillator unless told otherwise, and loading a frame of 176 bytes through this bridge takes about a second. The crystal therefore starts again at the beginning of every transmission. On a board with a real SPI bus the same steps take a millisecond. Whether this matters for the frames is not tested.
 
 ## When the radio stops answering
 
-At the end of those 90 s the radio stopped obeying commands, and it has to be said plainly: **software could not bring it back.**
+At the end of those 90 s the radio stopped obeying commands, and it has to be said plainly: **software could not bring it back, and why it happened is not known.**
 
 | | Observed |
 |---|---|
 | The bridge | Answers at 0x28 and clocks frames out in the usual 3.5 ms per byte. |
-| The radio | Answers every frame with the same bytes, `f0 a0` and then more status-like bytes, whatever the command. It returns no register and no buffer content, so the start-up sync never finds its pattern. |
-| In a long frame | The status bytes walk through standby, oscillator, synthesizer and receive within some 50 ms, as if the radio ran a receive cycle of its own on every chip-select edge. |
-| Wake, `SetStandby`, cold `SetSleep` | No effect, at any spacing between 0 and 130 ms. |
+| The radio | Answers every frame with the same bytes, `f0 a0` and then more status-like bytes, whatever the command. It returns no register and no buffer content, so the start-up sync never finds its pattern. Which state of the radio this is cannot be told from those bytes. |
+| Wake, `SetStandby`, cold `SetSleep` | No command ever returned a register or the buffer. |
 | Rebooting the phone | No effect. The ATtiny's ring buffer still held the bytes from before the reboot: the cover's supply is not cut by a reboot, and the kernel offers no regulator for it. |
+| Taking the cover off and pressing it back on | The radio answered again. The cover needed a second, firm press before the bridge was seen at all. |
 
-The ATtiny's firmware has one more command, `0x02`, which sets its SPI mode, bit order and clock. It is marked untested in the source and, as written, can only ever select LSB first. `0x02` is also the radio's `ClearIrqStatus` opcode, so a frame that lost its leading `0x01` on the way would reconfigure the bridge instead of reaching the radio. That was checked and is not what happened here: the radio does not answer bit-reversed commands either, and its status bytes read correctly in the normal bit order.
+The ATtiny's firmware has one more command, `0x02`, which sets its SPI mode, bit order and clock. It is marked untested in the source and, as written, can only ever select LSB first. `0x02` is also the radio's `ClearIrqStatus` opcode, so a frame that lost its leading `0x01` on the way would reconfigure the bridge instead of reaching the radio. One test was made for it: commands sent bit-reversed got no answer either. That speaks against a changed bit order alone. A changed clock mode was not tested, so this cause is not excluded.
+
+**What follows for any use without a person nearby:** a radio that only a hand can reset. A reset line driven by a reflashed ATtiny, or a supply the phone can switch, would be the remedy; neither exists, and the board's reset wiring has not been verified on this unit.
 
 ## Running the demo on the phone
 
@@ -174,6 +257,9 @@ Bench phone settings that make this repeatable: `i2c-dev` in `/etc/modules-load.
 - BUSY wiring on this board revision (the 25 April 2021 schematic routes it to ATtiny PB2, the 2 April one does not). No firmware reads it either way.
 - Whether the debug serial output is really what takes the time: it fits the numbers and the source, but nobody has put a probe on the ATtiny's pin.
 - Range and packet loss. Every packet so far came from a node in the same room.
-- What state the radio was in when it stopped answering, and whether taking the cover off and putting it back is enough to reset it. A reboot is not, and the phone has no switch for the cover's supply.
-- The daemon with the long preamble and continuous receive, on the air.
-- The crystal's drift itself. The preamble lengths are measured, the explanation is not.
+- What damages the long frames. The receiver's offsets fit a frequency that moves with heat; nothing was measured inside a frame, and the supply was not measured at all.
+- Whether keeping the crystal running before a transmission changes anything.
+- The content of a frame the back cover sent. Every verdict so far is a checksum.
+- The daemon that receives continuously, receiving.
+- What state the radio was in when it stopped answering.
+- The settle delays that stand in for BUSY, in every state of the radio. Semtech's datasheet has BUSY rise while the radio handles an interrupt of its own, which no delay counted from a command covers.
