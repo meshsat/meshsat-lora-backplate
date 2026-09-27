@@ -1,0 +1,14 @@
+# /etc/meshtasticd/config.yaml for the phone. The radio itself is in
+# config.d/lora-pinedio-backcover.yaml.
+Logging:
+  LogLevel: info
+
+Webserver:
+  # Port: 9443
+
+General:
+  MaxNodes: 200
+  MaxMessageQueue: 100
+  ConfigDirectory: /etc/meshtasticd/config.d/
+  # The node's identity is derived from this interface's address.
+  MACAddressSource: wlan0

@@ -1,0 +1,20 @@
+# The Pine64 LoRa back cover on a PinePhone or PinePhone Pro, as meshtasticd's radio.
+# Goes to /etc/meshtasticd/config.d/. Needs a meshtasticd built from the MeshSat firmware
+# with env:meshsat-pinephone-pro: stock meshtasticd does not know `spidev: pinedio-i2c`.
+#
+# The radio has no chip select, interrupt, busy or reset line to name here: the bridge
+# stands in for all four.
+Lora:
+  Module: sx1262
+  spidev: pinedio-i2c
+  # The pogo-pin bus. /dev/i2c-5 on Mobian's 6.12-rockchip and on Megi's 6.19 kernel,
+  # /dev/i2c-2 on the original PinePhone. `i2cdetect -l` names the buses, and the back
+  # cover answers at 28 in `sudo i2cdetect -y <bus>`.
+  I2CDevice: /dev/i2c-5
+  # I2CAddress: 0x28
+  DIO2_AS_RF_SWITCH: true
+  SX126X_MAX_POWER: 22
+  # How many SPI bytes one bridge transaction carries (16 to 127) and how often the
+  # radio is asked whether something happened, in milliseconds.
+  # BridgeFrame: 120
+  # BridgePollMs: 20

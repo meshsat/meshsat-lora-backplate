@@ -15,14 +15,44 @@ The keyboard case uses the same pogo pins, so the two are never on together. Its
 
 ## What the bridge is
 
-An ATtiny84 running [tiny-i2c-spi](https://github.com/zschroeder6212/tiny-i2c-spi) (GPL-3.0, last commit June 2021). *From source*, confirmed by the sync below:
+An ATtiny84 running [tiny-i2c-spi](https://github.com/zschroeder6212/tiny-i2c-spi) (GPL-3.0, last commit June 2021). From its source, confirmed on the bench:
 
-- **Command `0x01` + N bytes:** chip select low, the N bytes are clocked out over a software SPI (mode 0, MSB first), chip select high. Every byte the radio clocked back is appended to a **128-byte ring buffer** in the ATtiny.
+- **Command `0x01` + N bytes:** chip select low, the N bytes are clocked out over a software SPI (mode 0, MSB first), chip select high. Every byte the radio clocked back is appended to a **128-byte ring buffer** in the ATtiny. One I2C write takes 128 bytes, the command byte included, so a frame is at most 127 bytes. The self-test carried 127 without error.
 - **Command `0x02` + 1 byte:** SPI mode, bit order and clock divider. Marked untested in the firmware. Not used.
-- **An I2C read returns one byte** from the ring buffer and advances its read index. Reading several bytes in one transfer returns junk after the first. The write index and the read index are never resynchronised by the firmware, so a driver must read exactly as many bytes as it wrote, forever, and resynchronise once at start.
-- **Nothing else.** The bridge has no command for reset, BUSY, DIO1 or any GPIO. The SX1262's NRESET is wired to the ATtiny's own reset pin, so the radio cannot be reset without reprogramming the bridge. DIO1 reaches an ATtiny pin the firmware ignores. The pogo INT pin is not connected to the radio (R42 unfitted on v1.0 boards) and on the Pro it cannot be claimed as a GPIO without killing the I2C bus (puurpl, Feb 2026).
+- **An I2C read returns one byte** from the ring buffer and advances its read index. The write index and the read index are never resynchronised by the firmware, so a driver must read exactly as many bytes as it wrote, forever, and resynchronise once at start.
+- **Nothing else.** The bridge has no command for reset, BUSY, DIO1 or any GPIO. The SX1262's NRESET is wired to the ATtiny's own reset pin. DIO1 reaches an ATtiny pin the firmware ignores. The pogo INT pin is not connected to the radio (R42 unfitted on v1.0 boards) and on the Pro it cannot be claimed as a GPIO without killing the I2C bus (puurpl, Feb 2026, not tried here).
 
-Consequences for any driver: BUSY is replaced by a delay or by polling the radio's status over SPI, DIO1 by polling `GetIrqStatus`, reset by a cold-start `SetSleep`. A full 255-byte Meshtastic frame needs a 257-byte transfer, which does not fit one I2C write to the ATtiny: `WriteBuffer` and `ReadBuffer` must be chunked by offset.
+## How the bridge behaves in time
+
+Measured on the bench phone, I2C at 100 kHz:
+
+| | Measured |
+|---|---|
+| An I2C write of N bytes | 0.1 ms per byte, returns at once |
+| The first read after a write | N x 3.5 ms: this is when the frame is clocked out |
+| Every further read | 0.5 ms |
+| Two writes back to back | the second waits N x 3.5 ms for the first frame |
+| A frame written and read back | about 4 ms per byte, whatever its length |
+
+**The bridge does not clock a frame out when it is written.** It learns that a write is over when the next I2C transaction starts, clocks the frame out then, and holds that transaction up until it is done. So a command reaches the radio when the read after it begins, and a driver that writes and walks away has not sent anything yet. Reading every reply in full, straight after the write, is what makes a command happen now and what tells when it is over.
+
+**3.5 ms per byte is the firmware's debug output.** tiny-i2c-spi is built with `DEBUG` defined and prints every byte it clocks back as hex on a software serial port at 9600 baud: three characters, 3.1 ms. Batching the reads into one ioctl changes nothing. Only an ATtiny reflashed without `DEBUG` would be faster, by a factor of fifty or more; that needs the ISP pads inside the cover and has not been done here.
+
+What this costs a driver:
+
+| | Bytes | Time |
+|---|---|---|
+| Ask the radio's status, one byte | 1 | 6 ms |
+| Fetch the interrupt flags | 4 | 16 to 19 ms |
+| Fetch a received frame of 50 bytes, with its status and signal report | 69 | 290 ms |
+| Set up a receive | 33 | 150 ms |
+| Carry a full 255-byte buffer to the radio and back | 520 | 2.0 s |
+
+**The status byte is there from the first byte.** While the opcode of a status request is clocked, the radio already answers with its status, top bit set (`0xA2` for `0x22`). A one-byte frame is therefore enough to ask whether anything moved, and the four-byte interrupt query is only needed when it did.
+
+**Sleep.** With LoRa as its packet type the radio keeps packet type, frequency and sync word across a warm sleep (`SetSleep 0x04`) and drops the receiver gain register, as Semtech documents. A cold sleep (`SetSleep 0x00`) drops everything and is the only reset there is. Any frame wakes the radio, and the frame that does is lost on it.
+
+Consequences for any driver: BUSY is replaced by a settle delay counted from the end of the reply, DIO1 by polling, reset by a cold sleep. `WriteBuffer` and `ReadBuffer` longer than one frame are cut up by offset. `src/PineDioBridge.*` in this repository does all of this, and `test/sim` is a bridge and a radio that behave as measured here.
 
 ## Start-up sync, as run
 
@@ -56,6 +86,17 @@ channel hash=0xfe  next hop=0x00  relay=0x1c  then 9 bytes of AES-CTR payload
 
 The demo polls the radio's IRQ status every 100 ms and reads the frame from the radio's buffer through the bridge. Nothing was transmitted: the demo sends only when a line is typed on its stdin.
 
+## Checking a back cover
+
+`bridge-selftest` needs no radio library and transmits nothing. It syncs the bridge, reads the radio's identity (`SX1261 V2D 2D02` on this unit, which is what an SX1262 says), carries buffers of every awkward length both ways, finds the largest frame the bridge takes, goes through sleep, wake and the reset stand-in, and times the polls. On the bench phone every check passes, with no I2C retry and no error in some 2700 bytes.
+
+```
+cmake -B build && cmake --build build -j4
+build/test_bridge && build/test_radiolib      # the simulated back cover, no hardware
+build/bridge-selftest /dev/i2c-5              # the real one
+build/lora-listen /dev/i2c-5 --seconds 600    # RadioLib's driver over the bridge, receive only
+```
+
 ## Running the demo on the phone
 
 Packages: `i2c-tools git cmake g++ make`. Then `sh tools/jf002-demo/build.sh` and:
@@ -71,7 +112,7 @@ Bench phone settings that make this repeatable: `i2c-dev` in `/etc/modules-load.
 
 ## Not yet verified
 
-- BUSY wiring on this board revision (the 25 April 2021 schematic routes it to ATtiny PB2, the 2 April one does not).
-- The ATtiny's clock (fuses imply 1 MHz, the firmware assumes 8 MHz) and the resulting I2C throughput.
-- Range, packet loss and any packet longer than one I2C write.
+- BUSY wiring on this board revision (the 25 April 2021 schematic routes it to ATtiny PB2, the 2 April one does not). No firmware reads it either way.
+- Whether the debug serial output is really what takes the time: it fits the numbers and the source, but nobody has put a probe on the ATtiny's pin.
+- Range and packet loss. Frames longer than one bridge transaction have gone to the radio's buffer and back, not over the air.
 - Whether the phone can cut the cover's supply, which would be the only way to reset the radio.
