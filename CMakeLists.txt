@@ -64,4 +64,7 @@ if(PINEDIO_WITH_RADIOLIB)
 
   add_executable(lora-listen tools/lora-listen/main.cpp)
   target_link_libraries(lora-listen pinedio-bridge radiolib-sx126x)
+
+  add_executable(lora-ping tools/lora-ping/main.cpp)
+  target_link_libraries(lora-ping pinedio-bridge radiolib-sx126x)
 endif()
