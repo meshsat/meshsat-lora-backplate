@@ -4,8 +4,16 @@
 // The back cover carries an SX1262 behind an ATtiny84 running tiny-i2c-spi. The bridge offers
 // one useful command (0x01 + bytes: clock them out over SPI in one chip-select frame) and keeps
 // what the radio clocked back in a 128-byte ring buffer that is read one byte per I2C read.
-// It has no reset line, no BUSY and no DIO1. This class carries SPI frames over that bridge and
-// stands in for the three missing lines:
+// It has no reset line, no BUSY and no DIO1.
+//
+// Measured on a PinePhone Pro (27 Sep 2026): the bridge does not clock a frame out when it is
+// written, but when the next I2C transaction begins, and it takes about 3.5 ms per byte doing
+// so. The first read after a write is therefore what delivers the frame to the radio, and it
+// returns when the frame is over; the reads after it take half a millisecond each. Every reply
+// is read in full, straight away: that is what makes a command happen now, and what tells us
+// when it is done. What is worth saving is bytes on the SPI side.
+//
+// This class carries SPI frames over that bridge and stands in for the three missing lines:
 //   BUSY  -> settle delays sized per command, and a wake pulse when the radio sleeps
 //   DIO1  -> GetIrqStatus polled through the bridge, edges delivered to a callback
 //   RESET -> a cold-start sleep followed by a wake
@@ -54,17 +62,17 @@ struct Config {
     /// SPI bytes carried by one bridge transaction. The ATtiny takes 128 bytes per I2C write
     /// (command byte included) and remembers 128 bytes of reply, so 127 is the ceiling.
     /// The floor is 16: the sync reads its pattern back in a single frame.
-    size_t maxSpiFrame = 96;
-    /// Period of the DIO1 stand-in. One poll takes about 16 ms on the real bridge.
+    size_t maxSpiFrame = 120;
+    /// Period of the DIO1 stand-in.
     uint32_t pollIntervalUs = 20000;
-    /// On the real bridge a byte written costs 0.1 ms and a byte read costs 4 ms, whatever the
-    /// bus speed: the ATtiny stretches the clock on every read. So the reply to a command that
-    /// only writes is left in the ring, and the ring is brought level again before the next
-    /// reply that matters, by whichever is cheaper: reading the leftovers, or writing a padding
-    /// frame that pushes the write index round to meet the read index.
-    bool skipWriteReplies = true;
-    /// Leftovers up to this many bytes are read, more are padded over.
-    unsigned readBreakEven = 3;
+    /// Two-stage poll. The radio's status byte is already there while the opcode of a status
+    /// request is clocked, so asking takes one byte. The interrupt flags are fetched (four
+    /// bytes) when that status differs from the one seen after the driver's last command,
+    /// and at least every fullPollUs for the events that leave the status alone: a header
+    /// that failed its check, or a second frame arriving while the status still speaks of
+    /// the first. fullPollUs is the longest such an event waits.
+    bool statusPoll = true;
+    uint32_t fullPollUs = 100000;
     /// Settle time after any command, after a mode change, after a calibration, after a wake.
     uint32_t settleUs = 300;
     uint32_t settleModeUs = 1000;
@@ -85,11 +93,10 @@ struct Stats {
     uint64_t retries = 0;    ///< repeated I2C writes
     uint64_t errors = 0;     ///< transfers that failed
     uint64_t split = 0;      ///< buffer or register commands carried in several frames
-    uint64_t polls = 0;      ///< DIO1 polls
+    uint64_t polls = 0;      ///< DIO1 polls that fetched the interrupt flags
+    uint64_t quickPolls = 0; ///< DIO1 polls answered by the status byte alone
     uint64_t irqEdges = 0;   ///< rising edges delivered
     uint64_t wakes = 0;      ///< wake pulses sent
-    uint64_t padBytes = 0;   ///< bytes written only to bring the ring level
-    uint64_t readsSaved = 0; ///< reply bytes that were never read
     unsigned syncReads = 0;  ///< reads the last sync needed
 };
 
@@ -134,15 +141,14 @@ class Bridge
     Stats stats() const;
 
   private:
+    bool rawFrame(const uint8_t *out, uint8_t *in, size_t len);
     bool rawWriteOnly(const uint8_t *out, size_t len);
-    bool rawRead(uint8_t *in, size_t len);
-    bool levelLocked();
     bool frame(const uint8_t *out, uint8_t *in, size_t len);
     bool splitFrame(const uint8_t *out, uint8_t *in, size_t len, size_t header, bool wideAddress);
     void afterFrame(const uint8_t *out, size_t len);
     bool wakeLocked();
     bool coldRestartLocked();
-    bool readIrqLocked(uint16_t &flags);
+    bool readIrqLocked(uint16_t &flags, uint8_t &status);
     bool fail();
     void pollLoop();
 
@@ -159,8 +165,9 @@ class Bridge
     std::atomic<bool> edgeDelivered{false};
     std::atomic<IrqCallback> callback{nullptr};
     bool resetLow = false;
-    unsigned unread = 0;       ///< reply bytes in the ring that were not read, modulo its size
-    uint8_t lastStatus = 0x22; ///< the last status byte the radio really sent
+    bool baselineValid = false; ///< false from the driver's last command until the next full poll
+    uint8_t baseline = 0;       ///< mode and command status at that full poll
+    uint64_t lastFullPollUs = 0;
 
     std::thread poller;
     std::mutex pollLock;
