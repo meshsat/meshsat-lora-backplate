@@ -59,6 +59,7 @@ int main(int argc, char **argv)
     int address = 0x28, power = 10, count = 3, waitSeconds = 12, hops = 1, payload = 16;
     double freq = 869.525, bw = 250.0;
     int sf = 11, cr = 5;
+    int preamble = 16;
     bool quietTx = false;
     Config cfg;
 
@@ -81,6 +82,8 @@ int main(int argc, char **argv)
             freq = std::atof(argv[++i]);
         else if (a == "--cr" && more)
             cr = std::atoi(argv[++i]);
+        else if (a == "--preamble" && more)
+            preamble = std::atoi(argv[++i]);
         else if (a == "--frame" && more)
             cfg.maxSpiFrame = (size_t)std::atoi(argv[++i]);
         else if (a == "--poll-ms" && more)
@@ -89,15 +92,16 @@ int main(int argc, char **argv)
             quietTx = true;
         else if (a == "-h" || a == "--help") {
             std::printf("usage: lora-ping [/dev/i2c-N] [--power dBm] [--count N] [--wait seconds] [--hops N]\n"
-                        "                 [--payload bytes] [--freq MHz] [--cr 5..8] [--frame N] [--poll-ms N]\n"
-                        "                 [--quiet-tx]\n"
+                        "                 [--payload bytes] [--freq MHz] [--cr 5..8] [--preamble symbols] [--frame N]\n"
+                        "                 [--poll-ms N] [--quiet-tx]\n"
                         "Transmits on Meshtastic's EU_868 LongFast by default, 10 dBm, and listens for a relay.\n"
                         "--quiet-tx leaves the bridge alone while the frame is on the air.\n");
             return 0;
         } else
             device = a;
     }
-    if (power < -9 || power > 22 || hops < 0 || hops > 7 || payload < 1 || payload > 239 || count < 1 || cr < 5 || cr > 8) {
+    if (power < -9 || power > 22 || hops < 0 || hops > 7 || payload < 1 || payload > 239 || count < 1 || cr < 5 || cr > 8 ||
+        preamble < 8 || preamble > 2000) {
         std::fprintf(stderr, "power -9..22 dBm, hops 0..7, payload 1..239 bytes, coding rate 5..8\n");
         return 2;
     }
@@ -117,7 +121,7 @@ int main(int argc, char **argv)
     Module module(&hal, Bridge::PinCs, Bridge::PinIrq, Bridge::PinReset, Bridge::PinBusy);
     SX1262 radio(&module);
 
-    int16_t state = radio.begin(freq, bw, sf, cr, 0x2B, power, 16, 0.0, false);
+    int16_t state = radio.begin(freq, bw, sf, cr, 0x2B, power, (uint16_t)preamble, 0.0, false);
     if (state != RADIOLIB_ERR_NONE) {
         std::fprintf(stderr, "radio.begin failed: %d (%s)\n", state, port.lastError().c_str());
         return 1;
