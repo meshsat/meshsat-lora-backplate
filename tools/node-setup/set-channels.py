@@ -62,7 +62,33 @@ def main() -> int:
     wanted = channel_set(sys.stdin.readline())
     region = config_pb2.Config.LoRaConfig.RegionCode.Value(args.region)
 
+    # A node that never had a region makes its keys when it gets one, and takes its number
+    # from them. On a slow radio link that is a minute or two, and everything addressed to
+    # the old number afterwards is refused. So the region goes first, alone.
     interface = connect(args.host)
+    if interface.localNode.localConfig.lora.region != region:
+        lora = interface.localNode.localConfig.lora
+        lora.region = region
+        if args.no_tx:
+            lora.tx_enabled = False
+        interface.localNode.writeConfig("lora")
+        print(f"region set to {args.region}, waiting for the node to settle", flush=True)
+        time.sleep(5)
+        interface.close()
+        settled = False
+        for _ in range(90):
+            time.sleep(4)
+            try:
+                interface = meshtastic.tcp_interface.TCPInterface(args.host)
+            except Exception:
+                continue
+            if interface.localNode.localConfig.lora.region == region:
+                settled = True
+                break
+            interface.close()
+        if not settled:
+            raise SystemExit("the node did not come back with the region set")
+
     node = interface.localNode
     node.beginSettingsTransaction()
 
@@ -99,7 +125,33 @@ def main() -> int:
         node.writeChannel(index)
 
     node.commitSettingsTransaction()
-    time.sleep(2)
+    time.sleep(5)
+    interface.close()
+
+    # Believe nothing that was not read back.
+    time.sleep(10)
+    interface = connect(args.host)
+    node = interface.localNode
+    problems = []
+    if node.localConfig.lora.region != region:
+        problems.append("region")
+    if role is not None and node.localConfig.device.role != role:
+        problems.append("role")
+    if args.tz and node.localConfig.device.tzdef != args.tz:
+        problems.append("time zone")
+    if args.no_tx and node.localConfig.lora.tx_enabled:
+        problems.append("transmitter still on")
+    me = interface.getMyUser() or {}
+    if args.owner and me.get("longName") != args.owner:
+        problems.append("name")
+    if args.short and me.get("shortName") != args.short:
+        problems.append("short name")
+    for index, settings in enumerate(wanted.settings):
+        have = node.channels[index].settings
+        if have.name != settings.name or have.psk != settings.psk:
+            problems.append(f"channel {index}")
+    lora = node.localConfig.lora
+    number = interface.myInfo.my_node_num if interface.myInfo else 0
     interface.close()
 
     names = ", ".join(s.name or "(default)" for s in wanted.settings)
@@ -111,7 +163,11 @@ def main() -> int:
         said += f", role {args.role}"
     if args.no_tx:
         said += ", transmitter off"
-    print(said)
+    print(f"node !{number:08x}: " + said)
+    if problems:
+        print("NOT APPLIED: " + ", ".join(problems), file=sys.stderr)
+        return 1
+    print("read back and verified")
     return 0
 
 
