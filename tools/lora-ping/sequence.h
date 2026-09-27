@@ -14,6 +14,7 @@
 
 #include <RadioLib.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -91,6 +92,30 @@ struct Proof {
     int16_t scan = 0; ///< what the channel scan said, when one was asked for
     double loadMs = 0;
 };
+
+/// Waits for the radio to say the frame is over, and for nothing else. The bridge's emulated
+/// interrupt line is only a reason to ask; what the radio's flags say decides, so a packet that
+/// came in while the frame was being loaded cannot pass for the end of the frame. Returns the
+/// flags as last read: with TX_DONE set the frame is over, without it the wait ran out or the
+/// bridge failed, and the caller must not treat the frame as sent.
+inline uint16_t awaitTransmitDone(SX1262 &radio, Clock &clock, uint64_t deadlineUs, std::atomic<bool> *edge,
+                                  std::atomic<bool> *stop, uint64_t askEveryUs = 250000)
+{
+    uint16_t flags = 0;
+    uint64_t asked = clock.nowUs();
+    for (;;) {
+        const bool rose = edge && edge->exchange(false);
+        if (rose || clock.nowUs() - asked >= askEveryUs) {
+            flags = (uint16_t)radio.getIrqFlags();
+            asked = clock.nowUs();
+            if (flags & RADIOLIB_SX126X_IRQ_TX_DONE)
+                return flags;
+        }
+        if (clock.nowUs() >= deadlineUs || (stop && stop->load()))
+            return (uint16_t)radio.getIrqFlags();
+        clock.sleepUs(2000);
+    }
+}
 
 /// Puts the radio into the state asked for, loads the frame and starts the transmission.
 /// For StandbyXosc the driver must have been begun with `standbyXOSC` set, so that every

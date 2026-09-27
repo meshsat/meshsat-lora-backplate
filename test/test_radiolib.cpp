@@ -326,6 +326,71 @@ TEST(a_channel_scan_stops_the_crystal_whatever_the_standby)
     CHECK(b.plate.radio.transmissions().back().crystalUs < 3000000);
 }
 
+TEST(a_packet_that_came_in_before_the_frame_is_not_the_end_of_the_frame)
+{
+    // What the tool used to get wrong: its interrupt latch could be set by a packet received while
+    // the frame was being loaded, and the wait for the end of the frame returned at once.
+    Bench b(173);
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
+    CHECK(b.plate.radio.injectRx(meshtasticFrame(20)));
+    std::atomic<bool> edge{true}; // the latch, set by that packet and never cleared
+    const std::vector<uint8_t> frame = meshtasticFrame(160);
+    bench::Proof proof;
+    CHECK_EQ(bench::send(b.radio, b.bridge, b.clock, bench::From::Receive, false, frame.data(), frame.size(), proof),
+             RADIOLIB_ERR_NONE);
+    CHECK_EQ(b.plate.radio.mode(), sim::ModeTx);
+    const uint64_t launched = b.clock.nowUs();
+    const uint16_t flags = bench::awaitTransmitDone(b.radio, b.clock, launched + 10000000, &edge, nullptr);
+    CHECK(flags & RADIOLIB_SX126X_IRQ_TX_DONE);
+    // The simulated frame takes 20 ms and 1.5 ms a byte: the wait cannot have ended before that.
+    CHECK(b.clock.nowUs() - launched >= 20000 + 1500ULL * frame.size());
+    CHECK_EQ(b.plate.radio.mode(), sim::ModeStandbyRc);
+    CHECK(b.plate.radio.transmitted().back() == frame);
+    CHECK_EQ(b.radio.finishTransmit(), RADIOLIB_ERR_NONE);
+    CHECK(b.level());
+}
+
+TEST(without_a_transmit_done_the_wait_ends_empty_handed)
+{
+    // Nothing on the air: the flags come back without TX_DONE when the time is up, and the
+    // caller must not count the frame as sent. A radio that stopped answering ends the same way.
+    Bench b(179);
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    std::atomic<bool> edge{true};
+    const uint64_t from = b.clock.nowUs();
+    const uint16_t flags = bench::awaitTransmitDone(b.radio, b.clock, from + 500000, &edge, nullptr);
+    CHECK(!(flags & RADIOLIB_SX126X_IRQ_TX_DONE));
+    CHECK(b.clock.nowUs() >= from + 500000);
+    std::atomic<bool> stop{true};
+    const uint64_t again = b.clock.nowUs();
+    CHECK(!(bench::awaitTransmitDone(b.radio, b.clock, again + 500000000, &edge, &stop) & RADIOLIB_SX126X_IRQ_TX_DONE));
+    CHECK(b.clock.nowUs() < again + 1000000); // a stop request ends it at once
+}
+
+TEST(a_frame_that_is_over_leaves_nothing_for_the_next)
+{
+    Bench b(181);
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    std::atomic<bool> edge{false};
+    for (int i = 0; i < 3; i++) {
+        const std::vector<uint8_t> frame = meshtasticFrame((size_t)(30 + 50 * i));
+        bench::Proof proof;
+        CHECK_EQ(bench::send(b.radio, b.bridge, b.clock, bench::From::StandbyRc, false, frame.data(), frame.size(), proof),
+                 RADIOLIB_ERR_NONE);
+        CHECK_EQ(proof.loaded, sim::ModeStandbyRc);
+        const uint64_t launched = b.clock.nowUs();
+        CHECK(bench::awaitTransmitDone(b.radio, b.clock, launched + 10000000, &edge, nullptr) & RADIOLIB_SX126X_IRQ_TX_DONE);
+        CHECK(b.clock.nowUs() - launched >= 20000 + 1500ULL * frame.size());
+        CHECK_EQ(b.radio.finishTransmit(), RADIOLIB_ERR_NONE);
+        // The flags are clean: the next frame's wait cannot be satisfied by this one.
+        CHECK_EQ(b.radio.getIrqFlags() & RADIOLIB_SX126X_IRQ_TX_DONE, 0);
+        CHECK(b.plate.radio.transmitted().back() == frame);
+    }
+    CHECK_EQ(b.plate.radio.transmitted().size(), 3);
+    CHECK_EQ(b.plate.radio.busyViolations(), 0);
+}
+
 TEST(the_mode_read_back_is_the_mode_the_radio_is_in)
 {
     Bench b(167);

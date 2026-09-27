@@ -264,6 +264,29 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(frames[2]["t_end"], 51090.0)
         self.assertEqual(frames[0]["outcome"]["mode_loaded"], 2)
 
+    def test_a_line_logged_a_little_late_still_counts(self):
+        # The receiver writes after the frame and its own processing; the tolerance has room for that.
+        rows = self.run_case(
+            alive(900, 1200) + ok(1000, "0x11111111", 32) + ok(1010, "0x33333333", 32) + ok(1043, "0x22222222", 76),
+            [attempt("a", "0x11111111", 32, 51000), attempt("c", "0x33333333", 32, 51010), attempt("b", "0x22222222", 76, 51040)],
+        )
+        self.assertEqual(rows["b"]["verdict"], "accepted")
+
+    def test_a_line_logged_too_late_does_not(self):
+        rows = self.run_case(
+            alive(900, 1200) + ok(1000, "0x11111111", 32) + ok(1010, "0x33333333", 32) + ok(1050, "0x22222222", 76),
+            [attempt("a", "0x11111111", 32, 51000), attempt("c", "0x33333333", 32, 51010), attempt("b", "0x22222222", 76, 51040)],
+        )
+        self.assertEqual(rows["b"]["verdict"], "ambiguous")
+
+    def test_a_sender_the_sender_side_did_not_keep_is_said_so(self):
+        recorded = attempt("a", "0x11111111", 32, 51000)
+        not_recorded = dict(attempt("b", "0x22222222", 76, 51040), sender_recorded=False)
+        rows = self.run_case(alive(900, 1200) + ok(1000, "0x11111111", 32) + ok(1040, "0x22222222", 76), [recorded, not_recorded])
+        self.assertEqual(rows["a"]["identity"], "id, sender, length")
+        self.assertEqual(rows["b"]["verdict"], "accepted")
+        self.assertEqual(rows["b"]["identity"], "id, length; the sender is the receiver's")
+
     def test_the_counts_add_up(self):
         rows = self.run_case(
             alive(900, 1200) + ok(1000, "0x11111111", 32) + refused(1040, "0x22222222"),
