@@ -6,7 +6,12 @@
 #
 # Run on the phone (needs git, cmake >= 3.21, g++, i2c-tools):
 #   sh tools/jf002-demo/build.sh [workdir]
-#   sudo <workdir>/pinedio-lora-driver/build/apps/pinephone-communicator/pinephone-communicator
+#   i2cdetect -l                      # PinePhone: i2c-2. Pro: the pogo bus (ff140000.i2c) is i2c-5 on
+#                                     # Megi 6.19, i2c-4 on 6.12; on postmarketOS it may be disabled in the DTB
+#   sudo i2cdetect -y <bus>           # 0x28 is the back cover; reseat the cover if it is missing
+#   sudo <workdir>/pinedio-lora-driver/build/apps/pinephone-communicator/pinephone-communicator /dev/i2c-<bus>
+# Leave the demo with Ctrl-D or Ctrl-C, never kill -9: an I2C transaction cut mid-way hangs the ATtiny
+# until the phone is fully powered off (puurpl, Feb 2026).
 #
 # JF002's driver is LGPL-3.0, SudoMaker's SX126x library LGPL-3.0; neither is vendored here.
 set -eu
@@ -32,4 +37,4 @@ cmake -DBUILD_FOR_PINEPHONE=1 -DBUILD_FOR_USB=0 .. >/dev/null
 make pinephone-communicator
 echo
 echo "built: $PWD/apps/pinephone-communicator/pinephone-communicator"
-echo "before running: i2cdetect -y 2   (expect 28; another bus number means edit /dev/i2c-2 in apps/pinephone-communicator/main.cpp)"
+echo "find the bus: i2cdetect -l, then sudo i2cdetect -y <bus> (expect 28), then run the binary with /dev/i2c-<bus>"

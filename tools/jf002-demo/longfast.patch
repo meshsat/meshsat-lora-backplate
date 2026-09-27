@@ -1,3 +1,21 @@
+diff --git a/apps/pinephone-communicator/main.cpp b/apps/pinephone-communicator/main.cpp
+index da940a4..2749472 100644
+--- a/apps/pinephone-communicator/main.cpp
++++ b/apps/pinephone-communicator/main.cpp
+@@ -4,9 +4,11 @@
+ #include <PineDio/LoRa/Exceptions.h>
+ #include <iostream>
+ 
+-int main() {
++int main(int argc, char** argv) {
++  // PinePhone: /dev/i2c-2. PinePhone Pro: the pogo bus is i2c-5 on Megi 6.19, i2c-4 on 6.12; find it with i2cdetect -l
++  const char* dev = argc > 1 ? argv[1] : "/dev/i2c-2";
+   try {
+-    PineDio::LoRa::PinephoneBackplate pinephoneBackplate("/dev/i2c-2");
++    PineDio::LoRa::PinephoneBackplate pinephoneBackplate(dev);
+     pinephoneBackplate.Initialize();
+     PineDio::LoRa::PinedioLoraRadio radio(pinephoneBackplate);
+     PineDio::LoRa::Communicator communicator(radio);
 diff --git a/src/PinedioLoraRadio.cpp b/src/PinedioLoraRadio.cpp
 index a71f9da..8907236 100644
 --- a/src/PinedioLoraRadio.cpp
