@@ -21,6 +21,10 @@ attempts.jsonl holds one JSON object per frame sent, with at least "attempt", "i
 check "t_end" (seconds on any clock that does not jump) and "airtime_ms". The receiver's
 clock is never trusted: its uptime is lined up with the sender's clock through the frames
 both sides agree on.
+
+A log is either the receiver's output as it came, or the file capture.py writes. The second
+says when this computer read each line and proves, line by line of its own, that the capture
+was running while the receiver had nothing to say.
 """
 import argparse
 import json
@@ -51,10 +55,10 @@ CRC_MISMATCH = -7
 
 @dataclass
 class Event:
-    kind: str  # accepted, refused, partial, own_tx_start, own_tx_end, other
+    kind: str  # accepted, refused, partial, own_tx_start, own_tx_end, other, heartbeat
     source: str
     line: int
-    uptime: int
+    uptime: float  # the receiver's uptime, or the capture's wall clock when the capture gives one
     packet_id: str = ""
     sender: str = ""
     length: int = -1
@@ -79,6 +83,18 @@ def norm(value) -> str:
     return hex(int(text, 16))
 
 
+def expected_payload(packet_id, length: int) -> bytes:
+    """The payload lora-ping gives a frame with this packet id: xorshift32, the top byte of every step."""
+    x = int(norm(packet_id), 16) or 0x6D657368
+    out = bytearray()
+    for _ in range(length):
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= x >> 17
+        x ^= (x << 5) & 0xFFFFFFFF
+        out.append(x >> 24)
+    return bytes(out)
+
+
 def read_log(path: str, source: str | None = None) -> list:
     """Every line of a receiver log that the firmware wrote, as events in the order written."""
     events = []
@@ -87,21 +103,35 @@ def read_log(path: str, source: str | None = None) -> list:
     with open(path, "rb") as handle:
         text = handle.read().decode("utf-8", errors="replace")
     for number, raw in enumerate(text.splitlines(), start=1):
+        read_at = None
+        if raw.startswith("{"):
+            # A line of capture.py: the receiver's text with the time it was read, or the capture's own sign.
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                continue
+            if record.get("kind") == "heartbeat":
+                events.append(Event("heartbeat", source or path, number, float(record["wall"])))
+                continue
+            if record.get("kind") != "line":
+                continue
+            read_at, raw = float(record["wall"]), record.get("text", "")
         found = LINE.search(ANSI.sub("", raw).rstrip("\r"))
         if not found:
             continue
         _, _, uptime, thread, message = found.groups()
-        event = Event("other", source or path, number, int(uptime))
+        event = Event("other", source or path, number, int(uptime) if read_at is None else read_at)
+        uptime = event.uptime
         if thread == "RadioIf":
             offset = OFFSET.match(message)
             accepted = RX_OK.match(message)
             refused = RX_REFUSED.match(message)
             rx_time = RX_TIME.match(message)
-            if rx_time and last_packet is not None and abs(last_packet.uptime - int(uptime)) <= 1:
+            if rx_time and last_packet is not None and abs(last_packet.uptime - uptime) <= 1:
                 last_packet.rx_time_ms = int(rx_time.group(1))
                 last_packet = None
             elif offset:
-                pending_offset = (int(uptime), float(offset.group(1)))
+                pending_offset = (uptime, float(offset.group(1)))
             elif accepted:
                 event.kind = "accepted"
                 event.packet_id, event.sender = norm(accepted.group(1)), norm(accepted.group(2))
@@ -150,7 +180,9 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
     """One verdict per attempt. Nothing is dropped: the result has as many rows as `attempts`."""
     ids = [norm(a["id"]) for a in attempts]
     repeated = {i for i in ids if ids.count(i) > 1}
-    uptimes = sorted(e.uptime for e in events)
+    # What the receiver wrote vouches for the receiver; the capture's own lines only for the capture.
+    uptimes = sorted(e.uptime for e in events if e.kind != "heartbeat")
+    beats = sorted(e.uptime for e in events if e.kind == "heartbeat")
     sending = own_transmissions(events)
 
     by_id = {}
@@ -174,9 +206,10 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
         end = float(attempt["t_end"]) - shift
         return end - float(attempt.get("airtime_ms", 0)) / 1000.0 - tolerance, end + tolerance
 
-    def covered(span) -> bool:
-        before = any(span[0] - health <= u <= span[0] for u in uptimes)
-        after = any(span[1] <= u <= span[1] + health for u in uptimes)
+    def covered(span, times=None) -> bool:
+        times = uptimes if times is None else times
+        before = any(span[0] - health <= u <= span[0] for u in times)
+        after = any(span[1] <= u <= span[1] + health for u in times)
         return before and after
 
     rows = []
@@ -245,6 +278,9 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
                 settle("radio_error", f"refused with error {row['error_codes']}", event)
         elif span is None:
             settle("capture_invalid", "no frame of this run lines the capture up, or the attempt has no time")
+        elif row["capture"] != "covers" and covered(span, beats):
+            row["capture"] = "receiver_silent"
+            settle("capture_invalid", "the capture ran, and the receiver wrote nothing around the time the frame was on the air")
         elif row["capture"] != "covers":
             settle("capture_invalid", "the capture holds no line around the time the frame was on the air")
         elif row.get("receiver_sending"):
@@ -257,6 +293,33 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
     return rows
 
 
+def load_attempts(path: str) -> list:
+    """The frames to judge, from a file of attempts or from the file lora-ping writes its frames into.
+    There a frame is an `attempt` line written before it was sent and an `outcome` line after."""
+    with open(path, encoding="utf-8") as handle:
+        records = [json.loads(line) for line in handle if line.strip().startswith("{")]
+    if not any("event" in record for record in records):
+        return records
+    outcomes = {(r.get("run"), r.get("frame")): r for r in records if r.get("event") == "outcome"}
+    attempts = []
+    for record in records:
+        if record.get("event") != "attempt":
+            continue
+        frame = dict(record)
+        outcome = outcomes.get((record.get("run"), record.get("frame")))
+        if record.get("tool") == "meshtasticd":
+            # The daemon's log gives the moment a frame was over.
+            frame["attempt"] = f"daemon-{record['id']}-{record['t']:.0f}"
+            frame["t_end"] = record["t"]
+        else:
+            frame["attempt"] = f"{record.get('run')}-{record.get('frame')}"
+            # Written down before the load; over when the outcome was written, or after load and airtime.
+            frame["t_end"] = outcome["t"] if outcome else record["t"] + (record["airtime_ms"] + 1500.0) / 1000.0
+            frame["outcome"] = outcome
+        attempts.append(frame)
+    return attempts
+
+
 def summary(rows: list) -> dict:
     counts = {}
     for row in rows:
@@ -267,15 +330,14 @@ def summary(rows: list) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--attempts", required=True, help="one JSON object per frame sent")
+    parser.add_argument("--attempts", required=True, help="one JSON object per frame sent, or lora-ping's own file")
     parser.add_argument("--log", action="append", required=True, help="a receiver log; repeat for more")
     parser.add_argument("--out", help="write one JSON object per attempt, with its verdict")
     parser.add_argument("--tolerance", type=float, default=4.0, help="seconds either side of a frame")
     parser.add_argument("--health", type=float, default=60.0, help="a capture covers a frame with a line this close")
     args = parser.parse_args()
 
-    with open(args.attempts, encoding="utf-8") as handle:
-        attempts = [json.loads(line) for line in handle if line.strip()]
+    attempts = load_attempts(args.attempts)
     events = []
     for path in args.log:
         events.extend(read_log(path))

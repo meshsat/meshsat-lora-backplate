@@ -29,7 +29,8 @@ void Sx1262::coldStart()
     regs[0x0911] = 0x05;
     regs[0x0912] = 0x05;
     regs[0x0736] = 0x0D;
-    chipMode = ModeStandbyRc;
+    fallback = 0x20;
+    enter(ModeStandbyRc);
     cmdStatus = 1;
     irq = irqMask = dio1Mask = 0;
     txBase = rxBase = rxLen = rxStart = 0;
@@ -49,7 +50,9 @@ void Sx1262::warmStart()
     const uint32_t freq = rfFreq;
     const uint16_t mask = irqMask, line = dio1Mask;
     const uint8_t tx = txBase, rx = rxBase, len = payloadLen;
+    const uint8_t after = fallback;
     coldStart();
+    fallback = after;
     packetType = type;
     rfFreq = freq;
     irqMask = mask;
@@ -69,6 +72,25 @@ uint8_t Sx1262::reg(uint16_t address) const
     return it == regs.end() ? 0 : it->second;
 }
 
+void Sx1262::enter(Mode next)
+{
+    // The crystal runs wherever the synthesizer may be needed, and in standby when asked to.
+    const bool runs = next == ModeStandbyXosc || next == ModeFs || next == ModeRx || next == ModeTx || next == ModeCad;
+    if (runs && !crystalOn)
+        crystalSince = clock.nowUs();
+    if (!runs && crystalOn)
+        stops++;
+    crystalOn = runs;
+    chipMode = next;
+}
+
+Mode Sx1262::fallbackMode() const
+{
+    // SetRxTxFallbackMode, from the datasheet and not yet seen on the bench: where the radio
+    // goes after a packet sent or received. After a channel scan it is always standby RC.
+    return fallback == 0x40 ? ModeFs : (fallback == 0x30 ? ModeStandbyXosc : ModeStandbyRc);
+}
+
 uint8_t Sx1262::status() const
 {
     return (uint8_t)((chipMode << 4) | (cmdStatus << 1));
@@ -84,13 +106,13 @@ void Sx1262::tick()
     const uint64_t now = clock.nowUs();
     if (txDoneAt && now >= txDoneAt) {
         txDoneAt = 0;
-        chipMode = ModeStandbyRc;
+        enter(fallbackMode());
         cmdStatus = 6;
         raise(IrqTxDone);
     }
     if (cadDoneAt && now >= cadDoneAt) {
         cadDoneAt = 0;
-        chipMode = ModeStandbyRc;
+        enter(ModeStandbyRc);
         raise((uint16_t)(IrqCadDone | (channelBusy ? IrqCadDetected : 0)));
     }
 }
@@ -109,7 +131,7 @@ bool Sx1262::injectRx(const std::vector<uint8_t> &payload, int rssiDbm, int snrD
     cmdStatus = 2;
     raise((uint16_t)(IrqPreamble | IrqHeaderValid | IrqRxDone));
     if (!rxContinuous)
-        chipMode = ModeStandbyRc;
+        enter(fallbackMode());
     return true;
 }
 
@@ -151,23 +173,23 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
 
     switch (op) {
     case 0x80: // SetStandby
-        chipMode = arg(1) ? ModeStandbyXosc : ModeStandbyRc;
+        enter(arg(1) ? ModeStandbyXosc : ModeStandbyRc);
         txDoneAt = cadDoneAt = 0;
         busy = 150;
         break;
     case 0x84: // SetSleep
-        chipMode = ModeSleep;
+        enter(ModeSleep);
         sleptWarm = (arg(1) & 0x04) != 0;
         busy = 500;
         break;
     case 0xC1: // SetFs
-        chipMode = ModeFs;
+        enter(ModeFs);
         busy = 150;
         break;
     case 0x82: { // SetRx
         const uint32_t timeout = (uint32_t)((arg(1) << 16) | (arg(2) << 8) | arg(3));
         rxContinuous = timeout == 0xFFFFFF;
-        chipMode = ModeRx;
+        enter(ModeRx);
         busy = 150;
         break;
     }
@@ -176,13 +198,14 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
         for (unsigned i = 0; i < payloadLen; i++)
             frame.push_back(buffer[(uint8_t)(txBase + i)]);
         sent.push_back(frame);
-        chipMode = ModeTx;
+        entries.push_back({chipMode, crystalOn ? clock.nowUs() - crystalSince : 0});
+        enter(ModeTx);
         txDoneAt = clock.nowUs() + 20000 + 1500ULL * payloadLen;
         busy = 150;
         break;
     }
     case 0xC5: // SetCad
-        chipMode = ModeCad;
+        enter(ModeCad);
         cadDoneAt = clock.nowUs() + 30000;
         busy = 150;
         break;
@@ -230,6 +253,9 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
     case 0x8A: // SetPacketType
         packetType = arg(1);
         break;
+    case 0x93: // SetRxTxFallbackMode
+        fallback = arg(1);
+        break;
     case 0x11: // GetPacketType
         if (n > 2)
             miso[2] = packetType;
@@ -274,7 +300,6 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
     case 0x96: // SetRegulatorMode
     case 0x9D: // SetDIO2AsRfSwitchCtrl
     case 0x97: // SetDIO3AsTcxoCtrl
-    case 0x93: // SetRxTxFallbackMode
     case 0x88: // SetCadParams
     case 0x9F: // StopTimerOnPreamble
     case 0xA0: // SetLoRaSymbNumTimeout

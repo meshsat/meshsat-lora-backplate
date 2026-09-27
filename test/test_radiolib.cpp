@@ -3,6 +3,7 @@
 // What passes here is what the Meshtastic daemon will ask of the transport.
 #include "PineDioBridgeHal.h"
 #include "check.h"
+#include "sequence.h"
 #include "sim/SimBackplate.h"
 
 #include <atomic>
@@ -215,6 +216,128 @@ TEST(sleep_and_standby_as_the_driver_does_them)
     CHECK(b.plate.radio.mode() == sim::ModeStandbyRc || b.plate.radio.mode() == sim::ModeStandbyXosc);
     CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
     CHECK_EQ(b.plate.radio.busyViolations(), 0);
+    CHECK(b.level());
+}
+
+// What the radio does while a frame is loaded, which through this bridge takes about a second.
+// The simulated radio keeps count of its crystal: when it started, and how often it was stopped.
+
+namespace
+{
+const uint64_t quarterMinute = 15000000;
+
+int16_t listenThenSend(Bench &b, bench::From from, bool scan, const std::vector<uint8_t> &frame, bench::Proof &proof)
+{
+    if (b.radio.startReceive() != RADIOLIB_ERR_NONE)
+        return RADIOLIB_ERR_UNKNOWN;
+    b.clock.advance(quarterMinute);
+    return bench::send(b.radio, b.bridge, b.clock, from, scan, frame.data(), frame.size(), proof);
+}
+} // namespace
+
+TEST(a_frame_loaded_in_receive_never_stops_the_crystal)
+{
+    Bench b(149);
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    const std::vector<uint8_t> frame = meshtasticFrame(160);
+    bench::Proof proof;
+    CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
+    const unsigned stops = b.plate.radio.crystalStops();
+    b.clock.advance(quarterMinute);
+    CHECK_EQ(bench::send(b.radio, b.bridge, b.clock, bench::From::Receive, false, frame.data(), frame.size(), proof),
+             RADIOLIB_ERR_NONE);
+    CHECK_EQ(proof.before, sim::ModeRx);
+    CHECK_EQ(proof.loaded, sim::ModeRx);
+    CHECK_EQ(b.plate.radio.transmissions().back().from, sim::ModeRx);
+    CHECK(b.plate.radio.transmissions().back().crystalUs > quarterMinute);
+    CHECK_EQ(b.plate.radio.crystalStops(), stops);
+    CHECK(b.plate.radio.transmitted().back() == frame);
+    CHECK_EQ(b.plate.radio.busyViolations(), 0);
+}
+
+TEST(the_daemons_way_starts_the_crystal_with_the_frame)
+{
+    // Receive, standby, channel scan, the load in standby RC: what Meshtastic's daemon does.
+    Bench b(151);
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    const std::vector<uint8_t> frame = meshtasticFrame(160);
+    bench::Proof proof;
+    CHECK_EQ(listenThenSend(b, bench::From::StandbyRc, true, frame, proof), RADIOLIB_ERR_NONE);
+    CHECK_EQ(proof.scan, RADIOLIB_CHANNEL_FREE);
+    CHECK_EQ(proof.before, sim::ModeStandbyRc);
+    CHECK_EQ(proof.loaded, sim::ModeStandbyRc);
+    CHECK_EQ(b.plate.radio.transmissions().back().from, sim::ModeStandbyRc);
+    CHECK_EQ(b.plate.radio.transmissions().back().crystalUs, 0);
+    CHECK(proof.loadMs > 500); // 176 bytes at 3.5 ms each, with the crystal stopped
+    CHECK(b.plate.radio.transmitted().back() == frame);
+    CHECK_EQ(b.plate.radio.busyViolations(), 0);
+}
+
+TEST(standby_with_the_crystal_keeps_it_running_through_the_load)
+{
+    Bench b(157);
+    b.radio.standbyXOSC = true;
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    const std::vector<uint8_t> frame = meshtasticFrame(160);
+    bench::Proof proof;
+    CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
+    const unsigned stops = b.plate.radio.crystalStops();
+    b.clock.advance(quarterMinute);
+    CHECK_EQ(bench::send(b.radio, b.bridge, b.clock, bench::From::StandbyXosc, false, frame.data(), frame.size(), proof),
+             RADIOLIB_ERR_NONE);
+    CHECK_EQ(proof.before, sim::ModeStandbyXosc);
+    CHECK_EQ(proof.loaded, sim::ModeStandbyXosc);
+    CHECK_EQ(b.plate.radio.transmissions().back().from, sim::ModeStandbyXosc);
+    CHECK(b.plate.radio.transmissions().back().crystalUs > quarterMinute);
+    CHECK_EQ(b.plate.radio.crystalStops(), stops);
+
+    // The frame over, the driver's own standby and the next receive keep it running too.
+    irqCount = 0;
+    b.radio.setDio1Action(onIrq);
+    for (int i = 0; i < 4000 && irqCount.load() == 0; i++) {
+        b.clock.advance(1000);
+        b.bridge.pollOnce();
+    }
+    CHECK_EQ(irqCount.load(), 1);
+    CHECK_EQ(b.plate.radio.mode(), sim::ModeStandbyXosc);
+    CHECK_EQ(b.radio.finishTransmit(), RADIOLIB_ERR_NONE);
+    CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
+    CHECK_EQ(b.plate.radio.crystalStops(), stops);
+    CHECK_EQ(b.plate.radio.busyViolations(), 0);
+}
+
+TEST(a_channel_scan_stops_the_crystal_whatever_the_standby)
+{
+    // After a scan the radio is in standby RC. Asking for the crystal again at once leaves it
+    // the time of the load to settle, not the quarter of a minute it had been running.
+    Bench b(163);
+    b.radio.standbyXOSC = true;
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    const std::vector<uint8_t> frame = meshtasticFrame(160);
+    bench::Proof proof;
+    CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
+    const unsigned stops = b.plate.radio.crystalStops();
+    b.clock.advance(quarterMinute);
+    CHECK_EQ(bench::send(b.radio, b.bridge, b.clock, bench::From::StandbyXosc, true, frame.data(), frame.size(), proof),
+             RADIOLIB_ERR_NONE);
+    CHECK_EQ(proof.loaded, sim::ModeStandbyXosc);
+    CHECK_EQ(b.plate.radio.crystalStops(), stops + 1);
+    CHECK(b.plate.radio.transmissions().back().crystalUs > 0);
+    CHECK(b.plate.radio.transmissions().back().crystalUs < 3000000);
+}
+
+TEST(the_mode_read_back_is_the_mode_the_radio_is_in)
+{
+    Bench b(167);
+    CHECK_EQ(b.beginLongFast(), RADIOLIB_ERR_NONE);
+    CHECK_EQ(bench::chipMode(b.bridge), sim::ModeStandbyRc);
+    CHECK_EQ(b.radio.standby(RADIOLIB_SX126X_STANDBY_XOSC), RADIOLIB_ERR_NONE);
+    CHECK_EQ(bench::chipMode(b.bridge), sim::ModeStandbyXosc);
+    CHECK_EQ(b.radio.startReceive(), RADIOLIB_ERR_NONE);
+    CHECK_EQ(bench::chipMode(b.bridge), sim::ModeRx);
+    // Asking does not change it, and leaves the ring level.
+    CHECK_EQ(bench::chipMode(b.bridge), sim::ModeRx);
+    CHECK_EQ(b.plate.radio.mode(), sim::ModeRx);
     CHECK(b.level());
 }
 

@@ -92,10 +92,12 @@ The demo polls the radio's IRQ status every 100 ms and reads the frame from the 
 
 ```
 cmake -B build && cmake --build build -j4
-build/test_bridge && build/test_radiolib      # the simulated back cover, no hardware
+ctest --test-dir build                        # the simulated back cover, no hardware
 build/bridge-selftest /dev/i2c-5              # the real one
 build/lora-listen /dev/i2c-5 --seconds 600    # RadioLib's driver over the bridge, receive only
 ```
+
+On a radio fresh from power-on the self-test's warm-sleep check fails, and passes once a driver has initialised the radio, for instance after `lora-listen` has run. Which step of the initialisation the radio needs before it keeps its settings across a warm sleep is not known. Until it is, that check says nothing about a cover that was just seated.
 
 ## Receiving through RadioLib
 
@@ -192,6 +194,23 @@ So the other nodes stand still and the back cover's transmitter moves by more th
 | 22 dBm | 16 | -54 dBm | 4, 7, 22 |
 
 RadioLib does not scale one amplifier setting: by default it takes a different amplifier configuration for every dBm from a table meant to save current, in the tool and in the daemon alike. The steps at the receiver are uneven (9 dB more from 5 to 10 dBm, 2 dB more from 10 to 14). Whether that is this table on this board, the supply, or the receiver's reading is not known. The reported signal-to-noise ratio does not tell an accepted frame from a refused one: the median is 4.75 dB for both.
+
+### Sending a frame so that the verdict can be trusted
+
+```
+# where the receiver is plugged in, before anything is sent
+tools/bench/capture.py /dev/ttyACM0 --out receiver.jsonl &
+tools/bench/capture.py --check receiver.jsonl          # running, and the receiver talking?
+
+# on the phone: one frame of 176 bytes at 0 dBm, loaded the way the daemon loads it
+build/lora-ping /dev/i2c-5 --power 0 --payload 160 --preamble 160 --hops 0 --count 1 \
+    --from standby --scan --settle 15 --label baseline
+
+# afterwards
+tools/bench/verdict.py --attempts airtime.jsonl --log receiver.jsonl --out ledger.jsonl
+```
+
+`--from` is what the radio does during the second the load takes: `standby` is the daemon's way and stops the crystal, `standby-xosc` and `rx` keep it running. The tool prints the mode the radio reported before and after the load. It writes every frame into `~/.local/state/meshsat-lora-backplate/airtime.jsonl` before sending it and does not send when 300 s of the last hour are spent; `tools/bench/daemon_airtime.py` adds what the daemon sent. None of this has been on the air yet: it was written and tested against the simulated back cover while the bench was paused.
 
 ### What went wrong with the first conclusion
 

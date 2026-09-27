@@ -31,6 +31,10 @@ add_executable(test_bridge test/test_bridge.cpp)
 target_link_libraries(test_bridge pinedio-sim)
 add_test(NAME bridge COMMAND test_bridge)
 
+add_executable(test_tools test/test_tools.cpp)
+target_include_directories(test_tools PRIVATE test tools/lora-ping)
+add_test(NAME tools COMMAND test_tools)
+
 add_executable(bridge-selftest tools/bridge-selftest/main.cpp)
 target_link_libraries(bridge-selftest pinedio-bridge)
 
@@ -59,6 +63,7 @@ if(PINEDIO_WITH_RADIOLIB)
   endif()
 
   add_executable(test_radiolib test/test_radiolib.cpp)
+  target_include_directories(test_radiolib PRIVATE tools/lora-ping)
   target_link_libraries(test_radiolib pinedio-sim radiolib-sx126x)
   add_test(NAME radiolib COMMAND test_radiolib)
 
