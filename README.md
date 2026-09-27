@@ -22,7 +22,7 @@ Pine64 sells a back cover for the PinePhone and the PinePhone Pro with a Semtech
 
 This repository closes that gap under Linux, in three steps: a bridge layer that lets Meshtastic's daemon talk to the radio through the ATtiny, the packaging that makes the phone a node, and then the MeshSat Bridge on the phone, so a phone in a pocket becomes a gateway between the LoRa mesh and the satellite.
 
-> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge, the transport, receive and transmit are proven on one phone on one bench, and Meshtastic's daemon has run on it. The radio needs a long preamble to send, and one fault left it deaf to every command, a reboot of the phone included. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
+> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge, the transport and receive are proven on one phone on one bench, and Meshtastic's daemon has run on it and received. **Transmit is not solved:** short frames arrive, the frames a node really sends arrive damaged, and no text sent by the daemon has been read on another node. One fault left the radio deaf to every command until the cover was taken off and put back. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
 
 ## How it fits together
 
@@ -40,15 +40,17 @@ flowchart LR
 
 ## What is here
 
+- [`docs/data/`](docs/data/): every frame the phone sent on the bench that a record survives of, one line each, with the receiver's verdict.
 - [`docs/BACKPLATE.md`](docs/BACKPLATE.md): the bridge as verified on the phone. Bus and address, how an SPI transfer is carried, the ring-buffer sync, what the bridge cannot do, and how it behaves in time, measured on the bench of 27 September 2026.
 - `src/`: **the bridge as a transport for an SX1262 driver.** `PineDioBridge` carries SPI frames over the ATtiny and stands in for the BUSY, DIO1 and reset lines the back cover does not have. `PineDioBridgeHal` adapts it to [RadioLib](https://github.com/jgromes/RadioLib). `library.json` makes it a PlatformIO library.
 - `test/`: a simulated back cover, the ATtiny as its firmware behaves and enough of an SX1262 to run RadioLib's unmodified driver against, on simulated time. 29 transport cases and 9 RadioLib cases.
 - `tools/bridge-selftest`: checks a real back cover without a radio library. Transmits nothing.
 - `tools/lora-listen`: RadioLib's driver over the bridge, receive only, tuned to Meshtastic's EU_868 LongFast by default.
-- `tools/lora-ping`: sends Meshtastic-shaped frames of a chosen length, power, coding rate and preamble, and listens for a neighbour relaying them. What found the preamble the radio needs.
+- `tools/lora-ping`: sends Meshtastic-shaped frames of a chosen length, power, coding rate and preamble, and listens for a neighbour relaying them.
+- `tools/bench/verdict.py`: gives every frame sent one verdict from a receiving node's firmware log. A frame counts as received only on a complete line that says so, and a capture that was not running counts neither for the radio nor against it. Its tests run without hardware: `python3 -m unittest` in `tools/bench`.
 - `tools/node-setup/`: gives a new node its region, name, role and channels over the daemon's TCP port, and reads them back.
 - `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on the same settings, and the script that builds it on the phone. It received the T-Deck on 27 September 2026.
-- `packaging/meshtasticd/`: the daemon's configuration for the phone, with the long preamble and the 14 dBm the radio needs.
+- `packaging/meshtasticd/`: the daemon's configuration for the phone. Its transmit settings are experimental and known not to carry a node's longer frames.
 - The daemon itself is built from the [MeshSat fork of the Meshtastic firmware](https://github.com/meshsat/meshsat-firmware), environment `meshsat-pinephone-pro`, which takes this library and adds `spidev: pinedio-i2c` as a radio bus. `meshsat-pinephone-pro-rxonly` is the same with its transmitter switched off at every boot.
 - Still to come: a service unit and an install page, and the pocket Bridge, the MeshSat Bridge on the phone with a TCP link to the daemon.
 
@@ -79,10 +81,12 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 | A packet received by RadioLib's driver through it            | **Yes**, the T-Deck and the T-Beam, 50 and 170 bytes, 27 Sep 2026 |
 | Meshtastic's daemon running the radio through the bridge     | **Yes**, 27 Sep 2026, with the usual preamble      |
 | A text received by the daemon, and a traceroute there and back | **Yes**, with a T-Deck Pro, 27 Sep 2026          |
-| A text sent by the daemon and read on another node           | **Not yet**: damaged with the usual preamble; the long one is not proven in the daemon |
-| Frames transmitted from the back cover                       | **Yes**, up to 216 bytes intact at 2 m with a preamble of 128 symbols or more, 27 Sep 2026 |
+| A text sent by the daemon and read on another node           | **No.** Six sendings of 90 and 154 bytes and a node announcement of 176 bytes were all refused with a checksum error, 27 Sep 2026 |
+| Short frames sent by the back cover, accepted by another node | **Yes**, 32 bytes at 14 and 22 dBm, 6 of 6, at 2 m, 27 Sep 2026; checksum only, the content was not compared |
+| Frames of 90 to 240 bytes from a rested radio                | **No** at 5 dBm and above, whatever the preamble. With a long preamble at 0 dBm and below, 126 bytes were accepted 5 of 5; longer ones mostly not |
 | Range, and packet loss over time                             | **Not measured**                                   |
-| Recovery of a radio that stopped answering, without hands    | **No**, a reboot does not reset it                 |
+| Recovery of a radio that stopped answering, without hands    | **No**, a reboot does not reset it, and the cause is not known |
+| Use without a person nearby                                  | **Not possible** as long as only a hand can reset the radio |
 | The MeshSat Bridge on the phone, a text out to the satellite | **Not built yet**                                  |
 | Deployment to a real end user                                | **Never**                                          |
 | Use in an actual emergency                                   | **Never**                                          |

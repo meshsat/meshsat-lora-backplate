@@ -13,13 +13,17 @@ Lora:
   I2CDevice: /dev/i2c-5
   # I2CAddress: 0x28
   DIO2_AS_RF_SWITCH: true
-  # The radio runs on a plain crystal, not a TCXO, and drifts while it starts to transmit.
-  # With Meshtastic's usual preamble of 16 symbols a frame longer than about 80 bytes
-  # arrives damaged. A long preamble lets the crystal settle before the data begins:
-  # 96 symbols were too few on the bench, 128 held. Every receiver accepts any length.
-  # The price is 1.3 s more time on air for every packet.
+  # TRANSMIT IS NOT QUALIFIED ON THIS RADIO, AND THE TWO VALUES BELOW ARE EXPERIMENTAL.
+  # As measured on 27 September 2026 (docs/BACKPLATE.md): with these two values a frame of
+  # 32 bytes arrives, and a node's longer frames, a text or its announcement, arrive with
+  # a checksum error. No combination of preamble and power has carried them from a rested
+  # radio at 5 dBm or more. Until one has, run the receive-only build
+  # (env:meshsat-pinephone-pro-rxonly) or set the node up with `set-channels.py --no-tx`.
+  #
+  # Preamble, in symbols, for what this node sends; it receives any length. Meshtastic's
+  # usual is 16. 160 costs 1.2 s more time on air for every packet.
   Preamble: 160
-  # 14 dBm is 25 mW. The radio does 22; the more power, the more heat, the more drift.
+  # The cap on the transmit power, in dBm.
   SX126X_MAX_POWER: 14
   # How many SPI bytes one bridge transaction carries (16 to 127) and how often the
   # radio is asked whether something happened, in milliseconds.
