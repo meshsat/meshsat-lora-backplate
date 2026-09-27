@@ -9,9 +9,10 @@
 #   i2cdetect -l                      # PinePhone: i2c-2. Pro: the pogo bus (ff140000.i2c) is i2c-5 on
 #                                     # Megi 6.19, i2c-4 on 6.12; on postmarketOS it may be disabled in the DTB
 #   sudo i2cdetect -y <bus>           # 0x28 is the back cover; reseat the cover if it is missing
-#   sudo <workdir>/pinedio-lora-driver/build/apps/pinephone-communicator/pinephone-communicator /dev/i2c-<bus>
-# Leave the demo with Ctrl-D or Ctrl-C, never kill -9: an I2C transaction cut mid-way hangs the ATtiny
-# until the phone is fully powered off (puurpl, Feb 2026).
+#   sleep 3600 | sudo <workdir>/pinedio-lora-driver/build/apps/pinephone-communicator/pinephone-communicator /dev/i2c-<bus>
+# Keep stdin open with the sleep: at end of file the demo transmits an empty frame every 100 ms.
+# Stop it with pkill -TERM before the sleep ends. i2cdetect lives in /usr/sbin and needs root.
+# Verified on Mobian 6.12 on 27 Sep 2026: bus i2c-5, 0x28, sync after 26 bytes, T-Deck received.
 #
 # JF002's driver is LGPL-3.0, SudoMaker's SX126x library LGPL-3.0; neither is vendored here.
 set -eu

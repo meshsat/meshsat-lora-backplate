@@ -22,7 +22,7 @@ Pine64 sells a back cover for the PinePhone and the PinePhone Pro with a Semtech
 
 This repository closes that gap under Linux, in three steps: a bridge layer that lets Meshtastic's daemon talk to the radio through the ATtiny, the packaging that makes the phone a node, and then the MeshSat Bridge on the phone, so a phone in a pocket becomes a gateway between the LoRa mesh and the satellite.
 
-> **Status: pre-release.** This is a prototype under active development, not a finished product. Nothing here has run on hardware yet. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
+> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge and a LongFast receive are proven on one phone; nothing else has run on hardware yet. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
 
 ## How it fits together
 
@@ -40,8 +40,8 @@ flowchart LR
 
 ## What is here
 
-- `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on Meshtastic's EU_868 LongFast settings, and the script that builds it on the phone. Not yet run on the phone.
-- `docs/BACKPLATE.md`: the bridge protocol as verified on the phone (I2C address, how an SPI transfer is carried, how BUSY and DIO1 are read, reset), written from the bench, not from memory.
+- `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on Meshtastic's EU_868 LongFast settings, and the script that builds it on the phone. Built and run on the phone on 27 September 2026; it received the T-Deck.
+- [`docs/BACKPLATE.md`](docs/BACKPLATE.md): the bridge protocol as verified on the phone (bus and address, how an SPI transfer is carried, the ring-buffer sync, what the bridge cannot do), written from the bench of 27 September 2026.
 - The bridge layer for Meshtastic's Linux daemon, built with the [MeshSat fork of the Meshtastic firmware](https://github.com/meshsat/meshsat-firmware).
 - The daemon configuration, a service unit and an install page for the phone.
 - The pocket Bridge: the MeshSat Bridge on the phone with a TCP link to the daemon.
@@ -54,8 +54,8 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 
 |                                                            | State                                       |
 | ---------------------------------------------------------- | ------------------------------------------- |
-| The bridge answers on the PinePhone Pro                    | **Not tried yet**                           |
-| A LongFast packet received through the existing driver     | **Not tried yet**                           |
+| The bridge answers on the PinePhone Pro                    | **Yes**, 0x28 on i2c-5, Mobian 6.12, 27 Sep 2026 |
+| A LongFast packet received through the existing driver     | **Yes**, a T-Deck text on 27 Sep 2026, see [docs/BACKPLATE.md](docs/BACKPLATE.md) |
 | Meshtastic's daemon running the radio through the bridge   | **Not built yet**                           |
 | Texts exchanged with another Meshtastic node               | **Not built yet**                           |
 | The MeshSat Bridge on the phone, a text out to the satellite | **Not built yet**                         |
