@@ -74,7 +74,7 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 | The transport against a simulated back cover                 | **Yes**, 38 cases, also under ASan, UBSan and TSan |
 | The transport against the real back cover, without the air   | **Yes**, `bridge-selftest` on 27 Sep 2026          |
 | RadioLib's driver started on the real radio through it       | **Yes**, `lora-listen` on 27 Sep 2026              |
-| A packet received by RadioLib's driver through it            | **Not yet**: nothing was on the air while it listened |
+| A packet received by RadioLib's driver through it            | **Yes**, the T-Deck and the T-Beam, 50 and 170 bytes, 27 Sep 2026 |
 | Meshtastic's daemon running the radio through the bridge     | **Not yet**, first build in progress               |
 | Texts exchanged with another Meshtastic node                 | **Not built yet**                                  |
 | Anything transmitted from the back cover                     | **Never**, the antenna is not confirmed            |

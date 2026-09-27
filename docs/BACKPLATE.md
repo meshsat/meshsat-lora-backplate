@@ -97,6 +97,19 @@ build/bridge-selftest /dev/i2c-5              # the real one
 build/lora-listen /dev/i2c-5 --seconds 600    # RadioLib's driver over the bridge, receive only
 ```
 
+## Receiving through RadioLib
+
+`lora-listen` is RadioLib's unmodified SX1262 driver over `PineDioBridgeHal`. In forty minutes on the bench it received what the two nodes in the room sent of their own accord:
+
+```
+18:52:35   50 bytes  RSSI -50.0 dBm  SNR 5.75 dB  read in 347.9 ms
+          to !ffffffff  from !27ca8f1c  id 0xff06463c  hop limit 3  hop start 3  channel 0xfe  relay 0x1c  payload 34
+18:58:06  170 bytes  RSSI -56.0 dBm  SNR 6.00 dB  read in 822.0 ms
+          to !ffffffff  from !8b04a69e  id 0x83d8e516  hop limit 3  hop start 3  channel 0xce  relay 0x9e  payload 154
+```
+
+The first is the T-Deck, the second the T-Beam. The second is longer than one bridge transaction, so its payload was fetched from the radio in two frames with the offset moved along, and the radio's checksum over the whole packet held. Reading a packet takes about 4.8 ms per byte of it, during which the radio is not listening.
+
 ## Running the demo on the phone
 
 Packages: `i2c-tools git cmake g++ make`. Then `sh tools/jf002-demo/build.sh` and:
@@ -114,5 +127,5 @@ Bench phone settings that make this repeatable: `i2c-dev` in `/etc/modules-load.
 
 - BUSY wiring on this board revision (the 25 April 2021 schematic routes it to ATtiny PB2, the 2 April one does not). No firmware reads it either way.
 - Whether the debug serial output is really what takes the time: it fits the numbers and the source, but nobody has put a probe on the ATtiny's pin.
-- Range and packet loss. Frames longer than one bridge transaction have gone to the radio's buffer and back, not over the air.
+- Range and packet loss. Every packet so far came from a node in the same room.
 - Whether the phone can cut the cover's supply, which would be the only way to reset the radio.
