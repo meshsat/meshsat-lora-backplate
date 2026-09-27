@@ -59,6 +59,7 @@ int main(int argc, char **argv)
     int address = 0x28, power = 10, count = 3, waitSeconds = 12, hops = 1, payload = 16;
     double freq = 869.525, bw = 250.0;
     int sf = 11, cr = 5;
+    bool quietTx = false;
     Config cfg;
 
     for (int i = 1; i < argc; i++) {
@@ -78,10 +79,17 @@ int main(int argc, char **argv)
             payload = std::atoi(argv[++i]);
         else if (a == "--freq" && more)
             freq = std::atof(argv[++i]);
+        else if (a == "--frame" && more)
+            cfg.maxSpiFrame = (size_t)std::atoi(argv[++i]);
+        else if (a == "--poll-ms" && more)
+            cfg.pollIntervalUs = (uint32_t)std::atoi(argv[++i]) * 1000;
+        else if (a == "--quiet-tx")
+            quietTx = true;
         else if (a == "-h" || a == "--help") {
             std::printf("usage: lora-ping [/dev/i2c-N] [--power dBm] [--count N] [--wait seconds] [--hops N]\n"
-                        "                 [--payload bytes] [--freq MHz]\n"
-                        "Transmits on Meshtastic's EU_868 LongFast by default, 10 dBm, and listens for a relay.\n");
+                        "                 [--payload bytes] [--freq MHz] [--frame N] [--poll-ms N] [--quiet-tx]\n"
+                        "Transmits on Meshtastic's EU_868 LongFast by default, 10 dBm, and listens for a relay.\n"
+                        "--quiet-tx leaves the bridge alone while the frame is on the air.\n");
             return 0;
         } else
             device = a;
@@ -139,6 +147,8 @@ int main(int argc, char **argv)
 
         const double airMs = radio.getTimeOnAir(frame.size()) / 1000.0;
         lineRose = false;
+        if (quietTx)
+            bridge.stopPolling(); // not a byte on the bridge while the frame is on the air
         const uint64_t t0 = clock.nowUs();
         state = radio.startTransmit(frame.data(), frame.size());
         const double loadedMs = (clock.nowUs() - t0) / 1000.0;
@@ -146,11 +156,19 @@ int main(int argc, char **argv)
             std::printf("startTransmit failed: %d\n", state);
             break;
         }
-        while (!lineRose && !stopping && clock.nowUs() - t0 < (uint64_t)((airMs + 3000) * 1000))
-            clock.sleepUs(2000);
+        if (quietTx) {
+            clock.sleepUs((uint64_t)((airMs + 150) * 1000));
+        } else {
+            while (!lineRose && !stopping && clock.nowUs() - t0 < (uint64_t)((airMs + 3000) * 1000))
+                clock.sleepUs(2000);
+        }
         const double doneMs = (clock.nowUs() - t0) / 1000.0;
         const uint16_t flags = (uint16_t)radio.getIrqFlags();
         radio.finishTransmit();
+        if (quietTx) {
+            lineRose = (flags & RADIOLIB_SX126X_IRQ_TX_DONE) != 0;
+            bridge.startPolling();
+        }
         stamp();
         if (!lineRose || !(flags & RADIOLIB_SX126X_IRQ_TX_DONE)) {
             std::printf("frame %d: NOT SENT, no transmit-done from the radio (flags 0x%04x)\n", n + 1, flags);
