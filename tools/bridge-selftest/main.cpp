@@ -139,8 +139,11 @@ int main(int argc, char **argv)
     ok = bridge.begin();
     report(ok, "sync again after the probes");
 
+    // The radio keeps its LoRa settings across a warm sleep only while LoRa is its packet type.
+    const uint8_t lora[2] = {0x8A, 0x01};
     const uint8_t setSync[5] = {0x0D, 0x07, 0x40, 0x24, 0xB4};
-    ok = bridge.transfer(setSync, nullptr, sizeof(setSync)) && readRegisters(bridge, 0x0740, sync, 2);
+    ok = bridge.transfer(lora, nullptr, sizeof(lora)) && bridge.transfer(setSync, nullptr, sizeof(setSync)) &&
+         readRegisters(bridge, 0x0740, sync, 2);
     report(ok && sync[0] == 0x24 && sync[1] == 0xB4, "sync word written", hex(sync, 2));
 
     const uint8_t sleep[2] = {0x84, 0x04};

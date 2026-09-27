@@ -376,6 +376,24 @@ TEST(sleep_is_followed_by_a_wake_pulse_and_no_command_is_lost)
     CHECK_EQ(bridge.stats().wakes, 1);
 }
 
+TEST(a_warm_sleep_keeps_the_lora_settings_and_a_cold_one_does_not)
+{
+    SimClock clock;
+    Backplate plate(clock, 127);
+    Bridge bridge(plate, clock);
+    CHECK(bridge.begin());
+    const uint8_t lora[2] = {0x8A, 0x01}, sync[5] = {0x0D, 0x07, 0x40, 0x24, 0xB4}, gain[4] = {0x0D, 0x08, 0xAC, 0x96};
+    const uint8_t warm[2] = {0x84, 0x04}, cold[2] = {0x84, 0x00};
+    CHECK(bridge.transfer(lora, nullptr, 2) && bridge.transfer(sync, nullptr, 5) && bridge.transfer(gain, nullptr, 4));
+    CHECK(bridge.transfer(warm, nullptr, 2));
+    CHECK_EQ(readRegister(bridge, 0x0740), 0x24);
+    CHECK_EQ(readRegister(bridge, 0x0741), 0xB4);
+    CHECK_EQ(readRegister(bridge, 0x08AC), 0x94); // as on the real radio: the gain is not kept
+    CHECK(bridge.transfer(cold, nullptr, 2));
+    CHECK_EQ(readRegister(bridge, 0x0740), 0x14);
+    CHECK_EQ(plate.radio.busyViolations(), 0);
+}
+
 TEST(chip_select_low_wakes_a_sleeping_radio)
 {
     SimClock clock;

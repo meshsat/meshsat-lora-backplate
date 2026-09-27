@@ -40,6 +40,29 @@ void Sx1262::coldStart()
     txDoneAt = cadDoneAt = 0;
 }
 
+void Sx1262::warmStart()
+{
+    // What the radio keeps in its retention memory: the settings made by commands, and the
+    // LoRa registers while LoRa is the packet type. The receiver gain is not among them.
+    const uint8_t sync0 = reg(0x0740), sync1 = reg(0x0741);
+    const uint8_t type = packetType;
+    const uint32_t freq = rfFreq;
+    const uint16_t mask = irqMask, line = dio1Mask;
+    const uint8_t tx = txBase, rx = rxBase, len = payloadLen;
+    coldStart();
+    packetType = type;
+    rfFreq = freq;
+    irqMask = mask;
+    dio1Mask = line;
+    txBase = tx;
+    rxBase = rx;
+    payloadLen = len;
+    if (type == 1) {
+        regs[0x0740] = sync0;
+        regs[0x0741] = sync1;
+    }
+}
+
 uint8_t Sx1262::reg(uint16_t address) const
 {
     auto it = regs.find(address);
@@ -102,7 +125,10 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
     if (chipMode == ModeSleep) {
         // Chip select woke it. The command that did so is lost.
         ignored++;
-        coldStart();
+        if (sleptWarm)
+            warmStart();
+        else
+            coldStart();
         clock.advance(durationUs);
         busyFor(3500);
         return miso;
@@ -131,6 +157,7 @@ std::vector<uint8_t> Sx1262::spiFrame(const std::vector<uint8_t> &mosi, uint64_t
         break;
     case 0x84: // SetSleep
         chipMode = ModeSleep;
+        sleptWarm = (arg(1) & 0x04) != 0;
         busy = 500;
         break;
     case 0xC1: // SetFs
