@@ -75,25 +75,35 @@ class Capture(unittest.TestCase):
         with open(self.out, encoding="utf-8") as handle:
             return [json.loads(line) for line in handle]
 
+    def wait_for(self, condition, seconds=5.0):
+        """The capture writes on its own schedule; a test waits for what it expects, up to a limit."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            records = self.records()
+            if condition(records):
+                return records
+            time.sleep(0.05)
+        return self.records()
+
     def test_lines_are_kept_with_the_time_they_were_read(self):
         before = time.time()
         os.write(self.master, b"\x1b[34mDEBUG \x1b[0m| 16:00:00 1000 [RadioIf] Packet RX: 477ms\r\nhalf a li")
-        time.sleep(0.6)
+        self.wait_for(lambda rs: any(r["kind"] == "line" for r in rs))
         os.write(self.master, b"ne\r\n")
-        time.sleep(0.6)
-        lines = [r for r in self.records() if r["kind"] == "line"]
+        records = self.wait_for(lambda rs: sum(r["kind"] == "line" for r in rs) >= 2 and sum(r["kind"] == "heartbeat" for r in rs) >= 3)
+        lines = [r for r in records if r["kind"] == "line"]
         self.assertEqual([r["text"] for r in lines], ["DEBUG | 16:00:00 1000 [RadioIf] Packet RX: 477ms", "half a line"])
         self.assertTrue(before <= lines[0]["wall"] <= time.time())
         self.assertLess(lines[0]["mono"], lines[1]["mono"])
-        self.assertGreaterEqual(len([r for r in self.records() if r["kind"] == "heartbeat"]), 3)
+        self.assertGreaterEqual(len([r for r in records if r["kind"] == "heartbeat"]), 3)
 
     def test_check_tells_a_silent_receiver_from_a_talking_one(self):
-        time.sleep(0.8)
+        self.wait_for(lambda rs: any(r["kind"] == "heartbeat" for r in rs))
         silent = subprocess.run(self.tool + ["--check", self.out, "--fresh", "5"], capture_output=True, text=True)
         self.assertEqual(silent.returncode, 1)
         self.assertIn("capture running, receiver SILENT", silent.stdout)
         os.write(self.master, b"INFO  | 16:00:01 1001 [Power] Battery: usbPower=1\n")
-        time.sleep(0.6)
+        self.wait_for(lambda rs: any(r["kind"] == "line" for r in rs))
         talking = subprocess.run(self.tool + ["--check", self.out, "--fresh", "5"], capture_output=True, text=True)
         self.assertEqual(talking.returncode, 0)
         self.assertIn("capture running, receiver talking", talking.stdout)
@@ -107,8 +117,7 @@ class Capture(unittest.TestCase):
         self.capture.terminate()
         self.capture.wait(timeout=5)
         self.assertEqual(self.records()[-1]["kind"], "stop")
-        gone = subprocess.run(self.tool + ["--check", self.out, "--fresh", "0.1"], capture_output=True, text=True)
-        time.sleep(0.2)
+        time.sleep(0.3)
         gone = subprocess.run(self.tool + ["--check", self.out, "--fresh", "0.1"], capture_output=True, text=True)
         self.assertEqual(gone.returncode, 1)
         self.assertIn("capture NOT running", gone.stdout)
