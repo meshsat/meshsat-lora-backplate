@@ -79,6 +79,8 @@ int main(int argc, char **argv)
             payload = std::atoi(argv[++i]);
         else if (a == "--freq" && more)
             freq = std::atof(argv[++i]);
+        else if (a == "--cr" && more)
+            cr = std::atoi(argv[++i]);
         else if (a == "--frame" && more)
             cfg.maxSpiFrame = (size_t)std::atoi(argv[++i]);
         else if (a == "--poll-ms" && more)
@@ -87,15 +89,16 @@ int main(int argc, char **argv)
             quietTx = true;
         else if (a == "-h" || a == "--help") {
             std::printf("usage: lora-ping [/dev/i2c-N] [--power dBm] [--count N] [--wait seconds] [--hops N]\n"
-                        "                 [--payload bytes] [--freq MHz] [--frame N] [--poll-ms N] [--quiet-tx]\n"
+                        "                 [--payload bytes] [--freq MHz] [--cr 5..8] [--frame N] [--poll-ms N]\n"
+                        "                 [--quiet-tx]\n"
                         "Transmits on Meshtastic's EU_868 LongFast by default, 10 dBm, and listens for a relay.\n"
                         "--quiet-tx leaves the bridge alone while the frame is on the air.\n");
             return 0;
         } else
             device = a;
     }
-    if (power < -9 || power > 22 || hops < 0 || hops > 7 || payload < 1 || payload > 239 || count < 1) {
-        std::fprintf(stderr, "power -9..22 dBm, hops 0..7, payload 1..239 bytes\n");
+    if (power < -9 || power > 22 || hops < 0 || hops > 7 || payload < 1 || payload > 239 || count < 1 || cr < 5 || cr > 8) {
+        std::fprintf(stderr, "power -9..22 dBm, hops 0..7, payload 1..239 bytes, coding rate 5..8\n");
         return 2;
     }
 
@@ -128,7 +131,7 @@ int main(int argc, char **argv)
     std::mt19937 gen(std::random_device{}());
     const uint32_t sender = 0x4d530000u | (gen() & 0xffff); // "MS" and sixteen bits of chance
     stamp();
-    std::printf("%.3f MHz, SF%d, BW %.0f kHz, %d dBm, as !%08x, %d hop%s\n", freq, sf, bw, power, sender, hops,
+    std::printf("%.3f MHz, SF%d, BW %.0f kHz, CR 4/%d, %d dBm, as !%08x, %d hop%s\n", freq, sf, bw, cr, power, sender, hops,
                 hops == 1 ? "" : "s");
 
     int sent = 0, relayed = 0;
