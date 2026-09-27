@@ -54,9 +54,17 @@ struct Config {
     /// SPI bytes carried by one bridge transaction. The ATtiny takes 128 bytes per I2C write
     /// (command byte included) and remembers 128 bytes of reply, so 127 is the ceiling.
     /// The floor is 16: the sync reads its pattern back in a single frame.
-    size_t maxSpiFrame = 64;
-    /// Period of the DIO1 stand-in.
-    uint32_t pollIntervalUs = 10000;
+    size_t maxSpiFrame = 96;
+    /// Period of the DIO1 stand-in. One poll takes about 16 ms on the real bridge.
+    uint32_t pollIntervalUs = 20000;
+    /// On the real bridge a byte written costs 0.1 ms and a byte read costs 4 ms, whatever the
+    /// bus speed: the ATtiny stretches the clock on every read. So the reply to a command that
+    /// only writes is left in the ring, and the ring is brought level again before the next
+    /// reply that matters, by whichever is cheaper: reading the leftovers, or writing a padding
+    /// frame that pushes the write index round to meet the read index.
+    bool skipWriteReplies = true;
+    /// Leftovers up to this many bytes are read, more are padded over.
+    unsigned readBreakEven = 3;
     /// Settle time after any command, after a mode change, after a calibration, after a wake.
     uint32_t settleUs = 300;
     uint32_t settleModeUs = 1000;
@@ -80,6 +88,8 @@ struct Stats {
     uint64_t polls = 0;      ///< DIO1 polls
     uint64_t irqEdges = 0;   ///< rising edges delivered
     uint64_t wakes = 0;      ///< wake pulses sent
+    uint64_t padBytes = 0;   ///< bytes written only to bring the ring level
+    uint64_t readsSaved = 0; ///< reply bytes that were never read
     unsigned syncReads = 0;  ///< reads the last sync needed
 };
 
@@ -124,8 +134,9 @@ class Bridge
     Stats stats() const;
 
   private:
-    bool rawFrame(const uint8_t *out, uint8_t *in, size_t len);
     bool rawWriteOnly(const uint8_t *out, size_t len);
+    bool rawRead(uint8_t *in, size_t len);
+    bool levelLocked();
     bool frame(const uint8_t *out, uint8_t *in, size_t len);
     bool splitFrame(const uint8_t *out, uint8_t *in, size_t len, size_t header, bool wideAddress);
     void afterFrame(const uint8_t *out, size_t len);
@@ -148,6 +159,8 @@ class Bridge
     std::atomic<bool> edgeDelivered{false};
     std::atomic<IrqCallback> callback{nullptr};
     bool resetLow = false;
+    unsigned unread = 0;       ///< reply bytes in the ring that were not read, modulo its size
+    uint8_t lastStatus = 0x22; ///< the last status byte the radio really sent
 
     std::thread poller;
     std::mutex pollLock;

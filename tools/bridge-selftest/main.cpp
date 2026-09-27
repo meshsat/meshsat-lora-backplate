@@ -120,7 +120,7 @@ int main(int argc, char **argv)
 
     // The largest bridge transaction this ATtiny takes, judged by a full-length frame.
     size_t best = 0;
-    for (size_t frame : {16, 32, 64, 96, 112, 120, 127}) {
+    for (size_t frame : {16, 64, 96, 127}) {
         Config cfg;
         cfg.maxSpiFrame = frame;
         Bridge probe(port, clock, cfg);
@@ -168,10 +168,36 @@ int main(int argc, char **argv)
     const uint8_t noDio[9] = {0x08, 0, 0, 0, 0, 0, 0, 0, 0};
     bridge.transfer(noDio, nullptr, sizeof(noDio));
 
+    // What a driver does around one received frame of 50 bytes, and to go back to listening.
+    t0 = clock.nowUs();
+    {
+        const uint8_t irq[4] = {0x12, 0, 0, 0}, rxStatus[4] = {0x13, 0, 0, 0}, pktStatus[5] = {0x14, 0, 0, 0, 0};
+        const uint8_t clear[3] = {0x02, 0xFF, 0xFF};
+        uint8_t reply[64];
+        std::vector<uint8_t> rd(3 + 50, 0);
+        rd[0] = 0x1E;
+        ok = bridge.transfer(irq, reply, 4) && bridge.transfer(rxStatus, reply, 4) && bridge.transfer(rd.data(), reply, rd.size()) &&
+             bridge.transfer(pktStatus, reply, 5) && bridge.transfer(clear, reply, 3);
+    }
+    std::snprintf(line, sizeof(line), "%.1f ms", (clock.nowUs() - t0) / 1000.0);
+    report(ok, "commands to fetch a 50-byte frame", line);
+    t0 = clock.nowUs();
+    {
+        const uint8_t stby[2] = {0x80, 0x00}, base[3] = {0x8F, 0, 0}, pkt[7] = {0x8C, 0, 16, 0, 0xFF, 1, 0};
+        const uint8_t dioRx[9] = {0x08, 0x02, 0x62, 0x02, 0x62, 0, 0, 0, 0}, clear[3] = {0x02, 0xFF, 0xFF};
+        uint8_t reply[16];
+        ok = bridge.transfer(stby, reply, 2) && bridge.transfer(base, reply, 3) && bridge.transfer(pkt, reply, 7) &&
+             bridge.transfer(dioRx, reply, 9) && bridge.transfer(clear, reply, 3) && bridge.transfer(noDio, reply, 9);
+    }
+    std::snprintf(line, sizeof(line), "%.1f ms", (clock.nowUs() - t0) / 1000.0);
+    report(ok, "commands to set up a receive, without starting one", line);
+
     const Stats s = bridge.stats();
-    std::printf("frames %llu, SPI bytes %llu, I2C writes %llu, I2C reads %llu, retries %llu, errors %llu\n",
+    std::printf("frames %llu, SPI bytes %llu, I2C writes %llu, I2C reads %llu, reads saved %llu, padding %llu bytes, "
+                "retries %llu, errors %llu\n",
                 (unsigned long long)s.frames, (unsigned long long)s.spiBytes, (unsigned long long)s.i2cWrites,
-                (unsigned long long)s.i2cReads, (unsigned long long)s.retries, (unsigned long long)s.errors);
+                (unsigned long long)s.i2cReads, (unsigned long long)s.readsSaved, (unsigned long long)s.padBytes,
+                (unsigned long long)s.retries, (unsigned long long)s.errors);
     std::printf("%s\n", failed ? "SELFTEST FAILED" : "SELFTEST PASSED");
     return failed ? 1 : 0;
 }
