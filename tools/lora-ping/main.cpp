@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // lora-ping: does the back cover transmit, and does anybody hear it?
 //
-// Sends a short frame in Meshtastic's air format from a node number made up for the
-// occasion, on a channel hash nobody uses, with one hop left. A Meshtastic node that hears
-// it cannot read it and relays it all the same, once. The tool then listens for that relay:
-// the same sender and packet id, another relay byte, no hop left. Hearing it proves the
-// transmission without a second instrument. THIS TOOL TRANSMITS: antenna on, region right.
+// Sends a frame in Meshtastic's air format from a node number made up for the occasion, on
+// a channel hash nobody uses. With a hop left, a Meshtastic node that hears it cannot read
+// it and relays it all the same, once, and the tool listens for that relay. For a verdict on
+// a frame that matters, read the receiver's own log with tools/bench/verdict.py.
+//
+// Every frame is written down before it is sent, in a file that also keeps the airtime of
+// the hour; the tool does not send what it cannot write down or what the hour has no room
+// for. THIS TOOL TRANSMITS: antenna on, region right.
 #include "LinuxI2cPort.h"
 #include "PineDioBridgeHal.h"
+#include "ledger.h"
+#include "sequence.h"
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -51,6 +57,18 @@ void stamp()
     std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&now));
     std::printf("%s  ", buf);
 }
+double epoch()
+{
+    using namespace std::chrono;
+    return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count() / 1e6;
+}
+std::string plain(const std::string &text)
+{
+    std::string out;
+    for (char c : text)
+        out += (c == '"' || c == '\\' || (unsigned char)c < 0x20) ? ' ' : c;
+    return out;
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -60,7 +78,11 @@ int main(int argc, char **argv)
     double freq = 869.525, bw = 250.0;
     int sf = 11, cr = 5;
     int preamble = 16;
-    bool quietTx = false;
+    int settleSeconds = -1;
+    bool quietTx = false, scan = false;
+    double budget = 300.0;
+    bench::From from = bench::From::Legacy;
+    std::string ledgerPath = bench::Ledger::defaultPath(), label;
     Config cfg;
 
     for (int i = 1; i < argc; i++) {
@@ -90,12 +112,41 @@ int main(int argc, char **argv)
             cfg.pollIntervalUs = (uint32_t)std::atoi(argv[++i]) * 1000;
         else if (a == "--quiet-tx")
             quietTx = true;
+        else if (a == "--from" && more) {
+            if (!bench::parse(argv[++i], from)) {
+                std::fprintf(stderr, "--from takes legacy, rx, standby or standby-xosc\n");
+                return 2;
+            }
+        } else if (a == "--scan")
+            scan = true;
+        else if (a == "--settle" && more)
+            settleSeconds = std::atoi(argv[++i]);
+        else if (a == "--ledger" && more)
+            ledgerPath = argv[++i];
+        else if (a == "--budget" && more)
+            budget = std::atof(argv[++i]);
+        else if (a == "--label" && more)
+            label = argv[++i];
         else if (a == "-h" || a == "--help") {
-            std::printf("usage: lora-ping [/dev/i2c-N] [--power dBm] [--count N] [--wait seconds] [--hops N]\n"
-                        "                 [--payload bytes] [--freq MHz] [--cr 5..8] [--preamble symbols] [--frame N]\n"
-                        "                 [--poll-ms N] [--quiet-tx]\n"
-                        "Transmits on Meshtastic's EU_868 LongFast by default, 10 dBm, and listens for a relay.\n"
-                        "--quiet-tx leaves the bridge alone while the frame is on the air.\n");
+            std::printf(
+                "usage: lora-ping [/dev/i2c-N] [--power dBm] [--count N] [--wait seconds] [--hops N]\n"
+                "                 [--payload bytes] [--freq MHz] [--cr 5..8] [--preamble symbols] [--frame N]\n"
+                "                 [--poll-ms N] [--quiet-tx] [--from legacy|rx|standby|standby-xosc] [--scan]\n"
+                "                 [--settle seconds] [--ledger file] [--budget seconds] [--label text]\n"
+                "Transmits on Meshtastic's EU_868 LongFast by default, 10 dBm, and listens for a relay.\n"
+                "--from       what the radio does while the frame is loaded, which takes about a second:\n"
+                "             rx            it goes on receiving; the crystal never stops\n"
+                "             standby       standby on the RC oscillator, as the daemon does; the crystal\n"
+                "                           starts with the frame\n"
+                "             standby-xosc  standby with the crystal kept running\n"
+                "             legacy        standby for a run's first frame, rx for the others\n"
+                "--scan       scan the channel before the load, as the daemon does; not with rx\n"
+                "--settle     seconds of receive before a run's first frame; --wait by default\n"
+                "--quiet-tx   leave the bridge alone while the frame is on the air\n"
+                "--ledger     where every frame is written down; %s\n"
+                "--budget     seconds on the air the ledger allows in any hour; 300, the band allows 360\n"
+                "--label      a word for this run, kept with its frames\n",
+                bench::Ledger::defaultPath().c_str());
             return 0;
         } else
             device = a;
@@ -105,11 +156,19 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "power -9..22 dBm, hops 0..7, payload 1..239 bytes, coding rate 5..8\n");
         return 2;
     }
+    if (scan && (from == bench::From::Receive || from == bench::From::Legacy)) {
+        std::fprintf(stderr, "--scan goes with --from standby or standby-xosc: a scan ends the receive\n");
+        return 2;
+    }
+    if (settleSeconds < 0)
+        settleSeconds = waitSeconds;
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
+    std::signal(SIGHUP, onSignal); // a session that ends finishes the frame and leaves the radio in standby
     setvbuf(stdout, nullptr, _IOLBF, 0);
 
+    const bench::Ledger ledger(ledgerPath);
     LinuxI2cPort port;
     SystemClock clock;
     if (!port.open(device, address)) {
@@ -120,6 +179,8 @@ int main(int argc, char **argv)
     PineDioBridgeHal hal(bridge, clock);
     Module module(&hal, Bridge::PinCs, Bridge::PinIrq, Bridge::PinReset, Bridge::PinBusy);
     SX1262 radio(&module);
+    // Before begin(): the driver then also tells the radio to fall back to standby with the crystal.
+    radio.standbyXOSC = from == bench::From::StandbyXosc;
 
     int16_t state = radio.begin(freq, bw, sf, cr, 0x2B, power, (uint16_t)preamble, 0.0, false);
     if (state != RADIOLIB_ERR_NONE) {
@@ -134,11 +195,12 @@ int main(int argc, char **argv)
 
     std::mt19937 gen(std::random_device{}());
     const uint32_t sender = 0x4d530000u | (gen() & 0xffff); // "MS" and sixteen bits of chance
+    const uint32_t run = (uint32_t)gen();
     stamp();
-    std::printf("%.3f MHz, SF%d, BW %.0f kHz, CR 4/%d, %d dBm, as !%08x, %d hop%s\n", freq, sf, bw, cr, power, sender, hops,
-                hops == 1 ? "" : "s");
+    std::printf("%.3f MHz, SF%d, BW %.0f kHz, CR 4/%d, preamble %d, %d dBm, as !%08x, %d hop%s, from %s%s, run %08x\n", freq, sf,
+                bw, cr, preamble, power, sender, hops, hops == 1 ? "" : "s", bench::name(from), scan ? " after a scan" : "", run);
 
-    int sent = 0, relayed = 0;
+    int sent = 0, relayed = 0, exitCode = 0;
     for (int n = 0; n < count && !stopping && !bridge.inError(); n++) {
         std::vector<uint8_t> frame;
         const uint32_t id = (uint32_t)gen();
@@ -149,41 +211,112 @@ int main(int argc, char **argv)
         frame.push_back(0x5a); // a channel nobody has
         frame.push_back(0x00);
         frame.push_back((uint8_t)sender);
-        for (int i = 0; i < payload; i++)
-            frame.push_back((uint8_t)gen());
+        for (uint8_t b : bench::payloadFor(id, (size_t)payload))
+            frame.push_back(b);
 
         const double airMs = radio.getTimeOnAir(frame.size()) / 1000.0;
-        lineRose = false;
+        const double spent = ledger.spent(epoch());
+        if (spent + airMs / 1000.0 > budget) {
+            stamp();
+            std::printf("frame %d: NOT SENT, %.0f s were on the air in the last hour and the budget is %.0f s\n", n + 1, spent,
+                        budget);
+            exitCode = 4;
+            break;
+        }
+
+        // A run's first frame finds the radio in standby. Give it the receive the others get.
+        if (n == 0 && from != bench::From::Legacy && settleSeconds > 0) {
+            state = radio.startReceive();
+            if (state != RADIOLIB_ERR_NONE) {
+                std::printf("startReceive failed: %d\n", state);
+                break;
+            }
+            const uint64_t since = clock.nowUs();
+            while (!stopping && clock.nowUs() - since < (uint64_t)settleSeconds * 1000000ULL)
+                clock.sleepUs(5000);
+            if (stopping)
+                break;
+        }
+
+        char line[768];
+        std::snprintf(line, sizeof(line),
+                      "{\"t\":%.3f,\"event\":\"attempt\",\"tool\":\"lora-ping\",\"run\":\"%08x\",\"frame\":%d,\"label\":\"%s\","
+                      "\"id\":\"0x%08x\",\"sender\":\"0x%08x\",\"length\":%zu,\"payload\":\"xorshift32 of the id\","
+                      "\"airtime_ms\":%.0f,\"preamble\":%d,\"power_dbm\":%d,\"sf\":%d,\"bw_khz\":%.0f,\"cr\":%d,"
+                      "\"freq_mhz\":%.3f,\"hops\":%d,\"from\":\"%s\",\"scan\":%s,\"settle_s\":%d,\"wait_s\":%d,\"quiet_tx\":%s,"
+                      "\"spent_before_s\":%.1f}",
+                      epoch(), run, n + 1, plain(label).c_str(), id, sender, frame.size(), airMs, preamble, power, sf, bw, cr,
+                      freq, hops, bench::name(from), scan ? "true" : "false", n == 0 ? settleSeconds : waitSeconds, waitSeconds,
+                      quietTx ? "true" : "false", spent);
+        if (!ledger.append(line)) {
+            stamp();
+            std::printf("frame %d: NOT SENT, it cannot be written down in %s\n", n + 1, ledger.path.c_str());
+            exitCode = 5;
+            break;
+        }
+
+        bench::Proof proof;
         if (quietTx)
             bridge.stopPolling(); // not a byte on the bridge while the frame is on the air
         const uint64_t t0 = clock.nowUs();
-        state = radio.startTransmit(frame.data(), frame.size());
+        if (from == bench::From::Legacy) {
+            lineRose = false;
+            state = radio.startTransmit(frame.data(), frame.size());
+        } else {
+            state = bench::send(radio, bridge, clock, from, scan, frame.data(), frame.size(), proof);
+        }
+        // Whatever rose during the load was a packet received, not the end of this frame.
+        lineRose = false;
         const double loadedMs = (clock.nowUs() - t0) / 1000.0;
         if (state != RADIOLIB_ERR_NONE) {
-            std::printf("startTransmit failed: %d\n", state);
+            std::printf("the transmission could not be started: %d\n", state);
+            std::snprintf(line, sizeof(line),
+                          "{\"t\":%.3f,\"event\":\"outcome\",\"run\":\"%08x\",\"frame\":%d,\"id\":\"0x%08x\",\"tx_done\":false,"
+                          "\"error\":%d,\"mode_before\":%d,\"mode_loaded\":%d}",
+                          epoch(), run, n + 1, id, state, proof.before, proof.loaded);
+            ledger.append(line);
             break;
         }
+        uint16_t flags = 0;
         if (quietTx) {
             clock.sleepUs((uint64_t)((airMs + 150) * 1000));
+            flags = (uint16_t)radio.getIrqFlags();
         } else {
-            while (!lineRose && !stopping && clock.nowUs() - t0 < (uint64_t)((airMs + 3000) * 1000))
+            while (!stopping && clock.nowUs() - t0 < (uint64_t)((loadedMs + airMs + 3000) * 1000)) {
+                if (lineRose.exchange(false)) {
+                    flags = (uint16_t)radio.getIrqFlags();
+                    if (flags & RADIOLIB_SX126X_IRQ_TX_DONE)
+                        break;
+                }
                 clock.sleepUs(2000);
+            }
+            if (!(flags & RADIOLIB_SX126X_IRQ_TX_DONE))
+                flags = (uint16_t)radio.getIrqFlags();
         }
         const double doneMs = (clock.nowUs() - t0) / 1000.0;
-        const uint16_t flags = (uint16_t)radio.getIrqFlags();
+        const bool done = (flags & RADIOLIB_SX126X_IRQ_TX_DONE) != 0;
         radio.finishTransmit();
-        if (quietTx) {
-            lineRose = (flags & RADIOLIB_SX126X_IRQ_TX_DONE) != 0;
+        if (quietTx)
             bridge.startPolling();
-        }
+        const Stats now = bridge.stats();
+        std::snprintf(line, sizeof(line),
+                      "{\"t\":%.3f,\"event\":\"outcome\",\"run\":\"%08x\",\"frame\":%d,\"id\":\"0x%08x\",\"tx_done\":%s,"
+                      "\"irq_flags\":\"0x%04x\",\"mode_before\":%d,\"mode_loaded\":%d,\"scan\":%d,\"load_ms\":%.0f,"
+                      "\"handed_over_ms\":%.0f,\"done_ms\":%.0f,\"bridge_retries\":%llu,\"bridge_errors\":%llu}",
+                      epoch(), run, n + 1, id, done ? "true" : "false", flags, proof.before, proof.loaded, proof.scan,
+                      proof.loadMs, loadedMs, doneMs, (unsigned long long)now.retries, (unsigned long long)now.errors);
+        ledger.append(line);
         stamp();
-        if (!lineRose || !(flags & RADIOLIB_SX126X_IRQ_TX_DONE)) {
+        if (!done) {
             std::printf("frame %d: NOT SENT, no transmit-done from the radio (flags 0x%04x)\n", n + 1, flags);
             continue;
         }
         sent++;
-        std::printf("frame %d sent: %zu bytes, id 0x%08x, time on air %.0f ms, handed over in %.0f ms, done after %.0f ms\n",
-                    n + 1, frame.size(), id, airMs, loadedMs, doneMs);
+        std::printf("frame %d sent: %zu bytes, id 0x%08x, time on air %.0f ms, handed over in %.0f ms, done after %.0f ms", n + 1,
+                    frame.size(), id, airMs, loadedMs, doneMs);
+        if (from != bench::From::Legacy)
+            std::printf(", loaded in %s (%s before)", bench::modeName(proof.loaded), bench::modeName(proof.before));
+        std::printf("\n");
 
         lineRose = false;
         state = radio.startReceive();
@@ -217,23 +350,26 @@ int main(int argc, char **argv)
                 std::printf("a frame that did not read cleanly: %d, %zu bytes\n", state, len);
             }
             radio.startReceive();
-            if (heard)
+            // With a frame to follow, the receive goes on to its end: it is part of the setting.
+            if (heard && from == bench::From::Legacy)
                 break;
         }
-        if (!heard) {
+        if (!heard && hops > 0) {
             stamp();
             std::printf("frame %d: no relay heard in %d s\n", n + 1, waitSeconds);
         }
     }
 
     radio.clearDio1Action();
-    radio.standby();
+    radio.standby(RADIOLIB_SX126X_STANDBY_RC);
     hal.term();
     const Stats s = bridge.stats();
     stamp();
-    std::printf("%d sent, %d relayed back; bridge: %llu frames, %llu retries, %llu errors\n", sent, relayed,
-                (unsigned long long)s.frames, (unsigned long long)s.retries, (unsigned long long)s.errors);
+    std::printf("%d sent, %d relayed back; bridge: %llu frames, %llu retries, %llu errors; written down in %s\n", sent, relayed,
+                (unsigned long long)s.frames, (unsigned long long)s.retries, (unsigned long long)s.errors, ledger.path.c_str());
+    if (exitCode)
+        return exitCode;
     if (bridge.inError())
         return 1;
-    return sent == 0 ? 1 : (relayed ? 0 : 3);
+    return sent == 0 ? 1 : (relayed || hops == 0 ? 0 : 3);
 }

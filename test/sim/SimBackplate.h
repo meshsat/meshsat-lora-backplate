@@ -62,6 +62,15 @@ class Sx1262
     void raiseQuietly(uint16_t flags) { raise(flags); }
 
     Mode mode() const { return chipMode; }
+    /// One entry for every transmit command: the mode it met, and for how long the crystal had
+    /// been running by then, in microseconds. Zero when the crystal had to start for the frame.
+    struct Transmission {
+        Mode from;
+        uint64_t crystalUs;
+    };
+    const std::vector<Transmission> &transmissions() const { return entries; }
+    /// How often the crystal was stopped. Standby on the RC oscillator and sleep stop it.
+    unsigned crystalStops() const { return stops; }
     uint16_t irqStatus() const { return irq; }
     uint8_t reg(uint16_t address) const;
     uint32_t frequencyHz() const { return (uint32_t)((uint64_t)rfFreq * 32000000ULL >> 25); }
@@ -74,6 +83,8 @@ class Sx1262
 
   private:
     void tick();
+    void enter(Mode next);
+    Mode fallbackMode() const;
     void coldStart();
     void warmStart();
     void raise(uint16_t flags) { irq |= (uint16_t)(flags & irqMask); }
@@ -96,6 +107,11 @@ class Sx1262
     bool sleptWarm = false;
     uint64_t busyUntil = 0, txDoneAt = 0, cadDoneAt = 0;
     unsigned violations = 0, ignored = 0, frameCount = 0, longest = 0;
+    uint8_t fallback = 0x20;
+    bool crystalOn = false;
+    uint64_t crystalSince = 0;
+    unsigned stops = 0;
+    std::vector<Transmission> entries;
     std::vector<std::vector<uint8_t>> sent;
     std::vector<uint8_t> seen;
 };
