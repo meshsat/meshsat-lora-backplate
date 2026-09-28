@@ -1,0 +1,28 @@
+[Unit]
+Description=Meshtastic daemon on the PinePhone LoRa back cover (MeshSat node)
+Documentation=https://github.com/meshsat/meshsat-lora-backplate/blob/main/docs/INSTALL.md
+After=network-online.target
+Wants=network-online.target
+# A radio that stopped answering makes the daemon exit 1 within seconds of every start.
+# Five tries in 200 s, then the unit fails and meshsat-radio-watch takes over: it tells the
+# user to re-seat the cover and starts the daemon again once the radio answers.
+StartLimitIntervalSec=200
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=meshtasticd
+Group=meshtasticd
+SupplementaryGroups=i2c
+# The daemon keeps its keys, channels and node database under $HOME/.portduino/default.
+Environment=HOME=/var/lib/meshtasticd
+StateDirectory=meshtasticd
+WorkingDirectory=/var/lib/meshtasticd
+ExecStart=/usr/bin/meshtasticd -c /etc/meshtasticd/config.yaml
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,3 @@
+# The PinePhone's pogo-pin I2C bus, where the LoRa back cover's bridge answers at 0x28.
+# The daemon runs as user meshtasticd in group i2c.
+KERNEL=="i2c-[0-9]*", GROUP="i2c", MODE="0660"

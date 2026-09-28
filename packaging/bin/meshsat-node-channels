@@ -1,0 +1,19 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Give the node on this phone its region, channels and name from a Meshtastic channel URL.
+#
+#   cat channel-url.txt | meshsat-node-channels --owner my-phone --short MYPH --role CLIENT_MUTE
+#
+# The URL holds the channel keys, so it is read from standard input and never printed.
+# The work is done by tools/node-setup/set-channels.py of meshsat-lora-backplate through the
+# daemon's TCP port on localhost, with the Meshtastic Python package, which Debian does not
+# carry: the first run makes a private environment for it (needs the network once).
+set -eu
+SCRIPT=${MESHSAT_SET_CHANNELS:-/usr/lib/meshsat/node-setup/set-channels.py}
+VENV=${XDG_CACHE_HOME:-$HOME/.cache}/meshsat/venv
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "meshsat-node-channels: preparing $VENV (once)" >&2
+    python3 -m venv "$VENV"
+    "$VENV/bin/pip" install --quiet --disable-pip-version-check 'meshtastic==2.7.11'
+fi
+exec "$VENV/bin/python" "$SCRIPT" "$@"
