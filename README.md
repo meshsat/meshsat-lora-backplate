@@ -90,7 +90,8 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 | Range, and packet loss over time                             | **Not measured**; every node was in the same flat |
 | Recovery of a radio that stopped answering, without hands    | **No**, a reboot does not reset it, and the cause is not known |
 | Use without a person nearby                                  | **Not possible** as long as only a hand can reset the radio |
-| The MeshSat Bridge on the phone, a text out to the satellite | **Not built yet**                                  |
+| The MeshSat Bridge on the phone, over TCP to the daemon      | **Yes**, 28 Sep 2026, from the one-command package of [meshsat-linux](https://github.com/meshsat/meshsat-linux): a text sent through the Bridge's API read on a T-Deck, a T-Deck's text in the Bridge's store |
+| A text out to the satellite through the phone                | **Not yet**: the RockBLOCK is not on the phone's USB-C yet |
 | Deployment to a real end user                                | **Never**                                          |
 | Use in an actual emergency                                   | **Never**                                          |
 
