@@ -13,18 +13,19 @@ Lora:
   I2CDevice: /dev/i2c-5
   # I2CAddress: 0x28
   DIO2_AS_RF_SWITCH: true
-  # TRANSMIT IS NOT QUALIFIED ON THIS RADIO, AND THE TWO VALUES BELOW ARE EXPERIMENTAL.
-  # As measured on 27 September 2026 (docs/BACKPLATE.md): with these two values a frame of
-  # 32 bytes arrives, and a node's longer frames, a text or its announcement, arrive with
-  # a checksum error. No combination of preamble and power has carried them from a rested
-  # radio at 5 dBm or more. Until one has, run the receive-only build
-  # (env:meshsat-pinephone-pro-rxonly) or set the node up with `set-channels.py --no-tx`.
-  #
+  # THE RADIO IS QUALIFIED AT 0 dBm ONLY. The board has a plain crystal, not a TCXO, and it
+  # drifts as the amplifier heats. Measured on 27 and 28 September 2026 (docs/BACKPLATE.md,
+  # docs/data/): from a rested radio no frame of 126 bytes or more was accepted at 5 dBm
+  # and above (0 of 22); at 0 dBm the daemon's texts of 111 to 123 bytes were accepted by
+  # every receiver whose log covered them (7 of 7 at one node, 6 of 7 at the other), and
+  # read as text. 0 dBm is 1 mW: a room, a house, a street; not the range of a real node.
+  # Raising this cap sends frames that arrive damaged until the crystal is replaced by a
+  # TCXO (the footprint is on the board).
+  SX126X_MAX_POWER: 0
   # Preamble, in symbols, for what this node sends; it receives any length. Meshtastic's
-  # usual is 16. 160 costs 1.2 s more time on air for every packet.
+  # usual is 16. 160 costs 1.2 s more time on air for every packet. Whether it helps at
+  # 0 dBm was not measured; it is what every accepted frame above was sent with.
   Preamble: 160
-  # The cap on the transmit power, in dBm.
-  SX126X_MAX_POWER: 14
   # How many SPI bytes one bridge transaction carries (16 to 127) and how often the
   # radio is asked whether something happened, in milliseconds.
   # BridgeFrame: 120
