@@ -22,7 +22,7 @@ Pine64 sells a back cover for the PinePhone and the PinePhone Pro with a Semtech
 
 This repository closes that gap under Linux, in three steps: a bridge layer that lets Meshtastic's daemon talk to the radio through the ATtiny, the packaging that makes the phone a node, and then the MeshSat Bridge on the phone, so a phone in a pocket becomes a gateway between the LoRa mesh and the satellite.
 
-> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge, the transport and receive are proven on one phone on one bench, and Meshtastic's daemon has run on it and received. **Transmit is not solved:** short frames arrive, the frames a node really sends arrive damaged, and no text sent by the daemon has been read on another node. One fault left the radio deaf to every command until the cover was taken off and put back. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
+> **Status: pre-release.** This is a prototype under active development, not a finished product. The bridge, the transport, receive and Meshtastic's daemon are proven on one phone on one bench, and on 28 September 2026 texts went both ways between the phone and a T-Deck. **Only at 0 dBm, 1 mW:** the board has a plain crystal that drifts as the amplifier heats, so from 5 dBm up the frames a node really sends arrive damaged, and for some seconds after each transmission the phone cannot receive, which makes it send every text three times. One fault left the radio deaf to every command until the cover was taken off and put back. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
 
 ## How it fits together
 
@@ -50,9 +50,9 @@ flowchart LR
 - `tools/bench/verdict.py`: gives every frame sent one verdict from a receiving node's firmware log. A frame counts as received only on a complete line that says so, and a capture that was not running counts neither for the radio nor against it. `capture.py` keeps the receiver's log with the time each line was read and shows that it was running while the receiver was silent; `daemon_airtime.py` puts the daemon's transmissions into the same airtime file. Their tests run without hardware: `python3 -m unittest` in `tools/bench`.
 - `tools/node-setup/`: gives a new node its region, name, role and channels over the daemon's TCP port, and reads them back.
 - `tools/jf002-demo/`: the first bench step. A patch that turns JF002's PineDio demo into a listener on the same settings, and the script that builds it on the phone. It received the T-Deck on 27 September 2026.
-- `packaging/meshtasticd/`: the daemon's configuration for the phone. Its transmit settings are experimental and known not to carry a node's longer frames.
+- `packaging/meshtasticd/`: the daemon's configuration for the phone, capped at 0 dBm, the one power the radio is qualified at, with the web client on port 9443.
 - The daemon itself is built from the [MeshSat fork of the Meshtastic firmware](https://github.com/meshsat/meshsat-firmware), environment `meshsat-pinephone-pro`, which takes this library and adds `spidev: pinedio-i2c` as a radio bus. `meshsat-pinephone-pro-rxonly` is the same with its transmitter switched off at every boot.
-- Still to come: a service unit and an install page, and the pocket Bridge, the MeshSat Bridge on the phone with a TCP link to the daemon.
+- Still to come: a service unit, a watchdog for the radio that stops answering, and an install page here; the phone app and the one-command package in [meshsat-linux](https://github.com/meshsat/meshsat-linux); the pocket Bridge, the MeshSat Bridge on the phone with a TCP link to the daemon, in the [Bridge](https://github.com/meshsat/meshsat).
 
 ## Build and test
 
@@ -81,10 +81,12 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 | A packet received by RadioLib's driver through it            | **Yes**, the T-Deck and the T-Beam, 50 and 170 bytes, 27 Sep 2026 |
 | Meshtastic's daemon running the radio through the bridge     | **Yes**, 27 Sep 2026, with the usual preamble      |
 | A text received by the daemon, and a traceroute there and back | **Yes**, with a T-Deck Pro, 27 Sep 2026          |
-| A text sent by the daemon and read on another node           | **No.** Six sendings of 90 and 154 bytes and a node announcement of 176 bytes were all refused with a checksum error, 27 Sep 2026 |
+| A text sent by the daemon and read on another node           | **Yes, at 0 dBm**, 28 Sep 2026: three texts of 111 to 123 bytes, every copy accepted by the T-Deck whose log covered it (7 of 7 at one, 6 of 7 at the other) and read as text. At 14 and 22 dBm on 27 Sep 2026, six sendings and a node announcement were all refused |
+| A text typed on another node, read by the daemon             | **Yes**, 28 Sep 2026, two texts from a T-Deck Pro at -90 and -96 dBm, decoded on the first copy |
 | Short frames sent by the back cover, accepted by another node | **Yes**, 32 bytes at 14 and 22 dBm, 6 of 6, and 76 bytes at 10 dBm, 2 of 2, at 2 m, 27 Sep 2026; checksum only, the content was not compared |
-| Frames of 126 bytes and more from a rested radio             | **No** at 5 dBm and above: 0 of 22, with preambles of 160 to 320 symbols. At 0 dBm and below with a long preamble, 126 bytes were accepted 5 of 5, longer ones 2 of 12 |
-| Range, and packet loss over time                             | **Not measured**                                   |
+| Frames of 126 bytes and more from a rested radio             | **No** at 5 dBm and above: 0 of 22, with preambles of 160 to 320 symbols. At 0 dBm, 176 bytes were accepted 12 of 16 at one receiver and 14 of 16 at the other on 28 Sep 2026; keeping the crystal running through the load made no difference |
+| Receiving right after its own transmission                   | **No** for 5 to 28 s, 28 Sep 2026: nine rebroadcasts of its own packets refused at 3 to 8 s, a 106-byte frame refused at 28 s, 33-byte frames accepted from 11 s on. Every broadcast therefore goes out three times |
+| Range, and packet loss over time                             | **Not measured**; every node was in the same flat |
 | Recovery of a radio that stopped answering, without hands    | **No**, a reboot does not reset it, and the cause is not known |
 | Use without a person nearby                                  | **Not possible** as long as only a hand can reset the radio |
 | The MeshSat Bridge on the phone, a text out to the satellite | **Not built yet**                                  |

@@ -214,7 +214,18 @@ tools/bench/verdict.py --attempts airtime.jsonl --log receiver.jsonl --out ledge
 
 `--from` is what the radio does during the second the load takes: `standby` is the daemon's way and stops the crystal, `standby-xosc` and `rx` keep it running. The tool prints the mode the radio reported before and after the load; those are two readings, and what the radio did between them is inferred from the commands sent, not observed. The end of a frame is the radio's transmit-done flag and nothing else: the tool it replaces latched the emulated interrupt line, which a packet received during the load could raise, and would then have stopped the radio while the frame was still on the air. That path was never taken in the 87 frames of 27 September (every frame was reported sent, with its end 9 to 47 ms after its computed end); for the 70 frames whose sender-side record was lost it cannot be excluded.
 
-The tool writes every frame into `~/.local/state/meshsat-lora-backplate/airtime.jsonl` before sending it and does not send when 300 s of the last hour are spent. The daemon and the tool never share the bridge: the tool refuses to start while `meshtasticd` runs. The order is: stop the daemon, `tools/bench/daemon_airtime.py` its log into the same file, then the tool. None of this has been on the air yet: it was written and tested against the simulated back cover while the bench was paused.
+The tool writes every frame into `~/.local/state/meshsat-lora-backplate/airtime.jsonl` before sending it and does not send when 300 s of the last hour are spent. The daemon and the tool never share the bridge: the tool refuses to start while `meshtasticd` runs. The order is: stop the daemon, `tools/bench/daemon_airtime.py` its log into the same file, then the tool. It was written and tested against the simulated back cover while the bench was paused, and first used on the air in the run below.
+
+### Keeping the crystal running through the load: no difference
+
+The one controlled comparison the review asked for, run from 00:41 to 01:37 on 28 September 2026. The question: does a frame loaded while the crystal keeps running (B, `--from standby-xosc`) fare better than one loaded the daemon's way, on the RC oscillator with the crystal stopped (C, `--from standby`)? One frame length, 176 bytes (payload 160 from the packet id), preamble 160, 0 dBm; eight blocks of one B and one C in an order drawn before the run; 105 s idle and 15 s of receive before every frame; the chip mode read back after every load (3 for B, 2 for C, no frame void); two receivers under `capture.py`; read by pairs with `tools/bench/pairs.py`. The screen-positive criterion set beforehand was B accepted at least 6 of 8 and C at most 2 of 8. The data: [`docs/data/2026-09-28-b-against-c.csv`](data/2026-09-28-b-against-c.csv).
+
+| Receiver | B accepted | C accepted | Both | Only B | Only C | Neither | One-sided p if the arms are equal |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A, the primary | 5 of 8 | 7 of 8 | 4 | 1 | 3 | 0 | 0.94 |
+| B, the second | 7 of 8 | 7 of 8 | 6 | 1 | 1 | 0 | 0.75 |
+
+No clear separation at this operating point; at the primary receiver the control did better. The intervention is dropped and no firmware change follows from it. What the run also gave: at 0 dBm from a rested radio, 176-byte frames were accepted 12 of 16 at one receiver and 14 of 16 at the other, against 2 of 12 for frames longer than 126 bytes the evening before under looser conditions.
 
 ### What went wrong with the first conclusion
 
@@ -238,7 +249,45 @@ What it sent, from its own log, 16 bytes of header included:
 
 Those were sent with 16 symbols of preamble at 22 dBm, the announcement excepted. A broadcast text of N characters is N + 88 bytes on the air, because firmware 2.8 signs every broadcast it originates and the signature takes 66 bytes. A text to one node is not signed.
 
-What is proven with the daemon: it received and decoded a text from the T-Deck Pro, and its traceroute went there and back. **A text sent by the daemon has not been read on another node.**
+What was proven with the daemon that evening: it received and decoded a text from the T-Deck Pro, and its traceroute went there and back. No text sent by the daemon had been read on another node. The next night settled that, at 0 dBm.
+
+### 28 September 2026: texts both ways at 0 dBm
+
+Settings: `SX126X_MAX_POWER: 0` (the daemon's own log: `Final Tx power: 0 dBm`), preamble 160, the continuous-receive build (meshsat-firmware `6777ecc`, binary sha256 `0cb26067…74fede`), started 02:51:40 and again 03:06:30 for the web server, stopped 03:43:51. Receivers under `capture.py` on the laptop: T-Deck Pro A (`0xa1b3c2ec`, on the channel `msat-ttc-01`; its USB was unplugged from 02:59:36 to 03:18:00, so its log holds nothing for that time) and T-Deck Pro B (`0xa1b3c3a4`, not on the channel, relays what it hears; its capture was stopped from 02:56:50 to 03:03:06 while it sent probes). One verdict per copy by `tools/bench/verdict.py`, which since this night tells a node's own copy from a neighbour's rebroadcast by the relay byte and judges a packet sent more than once copy by copy. The data: [`docs/data/2026-09-28-daemon-frames.csv`](data/2026-09-28-daemon-frames.csv).
+
+| What the daemon sent | On the air | At A | At B |
+|---|---:|---|---|
+| Node announcement, 02:52:17 | 176 bytes | accepted, -78 dBm | refused, checksum, -70 dBm |
+| Text "MSPP at 0 dBm: hello from the phone", three copies 02:52:32, 02:52:41, 02:52:51 | 123 bytes | accepted 3 of 3, **read as text on the first copy** | accepted 3 of 3 (no key for the channel, so not read) |
+| Text "MSPP probe series start", three copies 02:57:57 to 02:58:16 | 111 bytes | accepted 3 of 3, read as text | capture stopped; A logged B relaying the second copy |
+| Node announcement, 03:07:04 | 176 bytes | no log (unplugged) | accepted, -68 dBm |
+| Text "Hello from the PinePhone, 0 dBm", three copies 03:16:04 to 03:16:23 | 119 bytes | no log (unplugged); on A's screen about four minutes later, by the owner's word | accepted 2; the second copy fell into B's own sending |
+
+A accepted 7 of the 7 frames its log covers. B accepted 6 of the 7 it could judge and refused the longest, the 176-byte announcement. Received by the daemon: "yyoio" from A at 02:59:48 (32 bytes, -90 dBm, SNR 4.75) and "yo" at 03:02:09 (29 bytes, -96 dBm), each decoded on the first copy, A's repeats and B's relays then dropped as duplicates; B's 33-byte probes at -53 to -54 dBm. The receivers' frequency estimates for the cover ran from 4603 to 5106 Hz over the night.
+
+**What is proven with the daemon now: at 0 dBm, a text sent by the daemon is read on another node, and a text from another node is read by the daemon.** 0 dBm is 1 mW; range was not measured, every node was in the same flat. Every text went out three times: see the next section.
+
+### Deaf after sending
+
+The daemon sent every packet three times, ten seconds apart, because it never heard B rebroadcast it. The data: [`docs/data/2026-09-28-deaf-window.csv`](data/2026-09-28-deaf-window.csv), every frame the phone's radio reported or missed after a transmission of its own.
+
+| Frame at the phone | Seconds after its own transmission ended | Verdict |
+|---|---:|---|
+| B's rebroadcasts of the phone's own packets, 111 to 123 bytes, nine of them | 3.2 to 7.8 | refused, checksum, 9 of 9 (-54 to -57 dBm) |
+| B's probe, 33 bytes, first copy | 4.5 | not reported at all; A heard it |
+| B's probe copies, 33 bytes | 11.1 and 18.1 | accepted |
+| B's probe copies, 33 bytes | 44 to 58 | accepted, 3 of 3 |
+| B's own node announcement, 106 bytes | 28.3 | refused, checksum |
+
+After a transmission the receiver refuses long frames for at least 28 s and misses short ones for something between 4.5 and 11 s. The crystal is still moving as the amplifier cools; the same cause as the transmit limit, the same cure. What it costs: three copies for every broadcast, three times the time on air; the ack for a direct message will most likely be missed; neighbours see every text three times and drop the copies as duplicates. Idle for minutes, the same receiver took B's 33-byte frames every time and A's texts at -96 dBm.
+
+### Direct messages
+
+A direct message to A was refused by the daemon before it reached the radio: `Error=39, return NAK and drop packet`, which is `PKI_SEND_FAIL_PUBLIC_KEY`. Firmware 2.8 sends a direct message under the peer's public key, and the daemon had never heard A's announcement. Broadcasts are not affected. A node the phone has heard announce itself can be messaged directly.
+
+### The web client
+
+Meshtastic's web client runs from the daemon itself with `Webserver: Port: 9443` in `config.yaml`. Three things the Linux daemon does not say: its own certificate generation fails (`Error reading File : /etc/meshtasticd/ssl/certificate.pem`, then `Major Error Gen & Read SSL Certificate`), after which it serves plain HTTP on the port; the files are served by the path asked, so the client's `build.tar` (v2.7.2 on this bench, sha256 `62657b85…16e2`) must be extracted under `/usr/share/meshtasticd/web` and `gunzip -r`'d, as Debian's package does; and when a TCP client such as the Python CLI drops its socket right after a send, the daemon logs `TCP client write short … closing API service` and goes on (the packet is sent). The client is laid out for a desktop screen and is hard to use on the phone's; the phone app is `meshsat-linux`.
 
 A node that never had a region makes its keys when it gets one, and takes its node number from them. Over the bridge that took 108 s; how that time divides between the processor, the entropy and the bridge was not measured. `tools/node-setup/set-channels.py` sets the region first, waits for the node to come back under its new number, and only then sets the rest.
 
@@ -281,8 +330,8 @@ Bench phone settings that make this repeatable: `i2c-dev` in `/etc/modules-load.
 - Whether the debug serial output is really what takes the time: it fits the numbers and the source, but nobody has put a probe on the ATtiny's pin.
 - Range and packet loss. Every packet so far came from a node in the same room.
 - What damages the long frames. The receiver's offsets fit a frequency that moves with heat; nothing was measured inside a frame, and the supply was not measured at all.
-- Whether keeping the crystal running before a transmission changes anything.
-- The content of a frame the back cover sent. Every verdict so far is a checksum.
-- The daemon that receives continuously, receiving.
+- The content of a frame the back cover sent by the tool. The daemon's texts of 28 September were read as text at the receiver; the tool's frames are still judged by checksum only.
+- Range. Every packet so far came from a node in the same flat, and the node is qualified at 0 dBm.
+- How long exactly the receiver is deaf after a transmission, by frame length: the bounds of 28 September are 4.5 to 11 s for 33 bytes and at least 28 s for 106 bytes and more.
 - What state the radio was in when it stopped answering.
 - The settle delays that stand in for BUSY, in every state of the radio. Semtech's datasheet has BUSY rise while the radio handles an interrupt of its own, which no delay counted from a command covers.
