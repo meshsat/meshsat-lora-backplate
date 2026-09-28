@@ -69,6 +69,9 @@ def frames(lines, date=None, sf: int = 11, bw_khz: float = 250.0):
             "tool": "meshtasticd",
             "id": sent.group(2),
             "sender": sent.group(3),
+            # The daemon sends a packet again when it hears no rebroadcast of it; a receiver tells
+            # the daemon's own copy from a neighbour's rebroadcast by this byte of the sender.
+            "relay": "0x" + sent.group(3)[-2:],
             "to": sent.group(4),
             "length": length,
             "preamble": preamble,

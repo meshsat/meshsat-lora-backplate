@@ -35,6 +35,7 @@ class Airtime(unittest.TestCase):
         self.assertEqual([f["preamble"] for f in frames], [160, 16, 16])
         self.assertEqual([f["airtime_ms"] for f in frames], [2722, 928, 928])
         self.assertEqual(frames[0]["sender"], "0x52cb81e7")
+        self.assertEqual([f["relay"] for f in frames], ["0xe7", "0xe7", "0xe7"])
 
     def test_a_log_that_runs_past_midnight(self):
         frames = list(daemon_airtime.frames(LOG.splitlines()))
