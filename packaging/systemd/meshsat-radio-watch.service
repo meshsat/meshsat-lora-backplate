@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the LoRa back cover's radio and tell the user when it must be re-seated
+Documentation=https://github.com/meshsat/meshsat-lora-backplate/blob/main/docs/INSTALL.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/lib/meshsat/watchdog/meshsat_radio_watch.py
+RuntimeDirectory=meshsat-node
+RuntimeDirectoryPreserve=yes
