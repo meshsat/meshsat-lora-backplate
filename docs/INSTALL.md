@@ -34,7 +34,7 @@ What you need on the phone: `git cmake g++ make python3 python3-venv i2c-tools o
    cat channel-url.txt | meshsat-node-channels --owner my-phone --short MYPH --role CLIENT_MUTE
    ```
    The first run makes a private Python environment for the Meshtastic client library (needs the network once). A node that was run on the bench before keeps its keys and channels: the install copies `~/.portduino/default/prefs` of the user who ran the install.
-5. **Look.** `journalctl -fu meshtasticd` shows the daemon; the line to look for is `Final Tx power: 0 dBm`. Meshtastic's web client is at `http://localhost:9443/` in the phone's browser (laid out for a desktop; the phone app is in meshsat-linux). Other nodes see the phone as the name you gave it.
+5. **Look.** `sudo journalctl -fu meshtasticd` shows the daemon; the line to look for is `Final Tx power: 0 dBm`. Meshtastic's web client is at `https://localhost:9443/` in the phone's browser, with the self-signed certificate the install made (accept it once; without a certificate the daemon serves plain `http://` on the same port). It is laid out for a desktop; the phone app is in meshsat-linux. Other nodes see the phone as the name you gave it.
 
 ## What the node does, and does not do
 
