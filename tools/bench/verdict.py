@@ -37,7 +37,11 @@ until a match appears.
 
 Identity. A match needs the packet id, the sender and the length. An attempt whose sender was
 not written down on the sender side ("sender_recorded": false, the sender then taken from the
-receiver's own line) is matched on id and length, and its row says so in "identity".
+receiver's own line) is matched on id and length, and its row says so in "identity". The daemon
+sends a packet again, with the same id, when it hears no rebroadcast of it, and neighbours
+rebroadcast it with the same id too: an attempt that carries the sender's relay byte ("relay",
+the last byte of its node number, as the receiver prints it) is matched only to copies with that
+byte, and copies of one id are judged each in its own time, or not at all when their times overlap.
 """
 import argparse
 import json
@@ -62,6 +66,9 @@ OFFSET = re.compile(r"^Corrected frequency offset: (-?[\d.]+)$")
 # The receiver's own sum of the time a packet of that length takes, written after either line.
 RX_TIME = re.compile(r"^Packet RX(?: \(noise\?\))? ?: (\d+)ms$")
 SIGNAL = re.compile(r"rxSNR=(-?[\d.]+) rxRSSI=(-?\d+)")
+# The last byte of the node that transmitted this copy: the sender's own for a direct frame,
+# a relaying node's for a rebroadcast of the same packet id.
+RELAY = re.compile(r"\brelay=(0x[0-9a-f]+)")
 HEX = re.compile(r"0x[0-9a-f]+")
 
 CRC_MISMATCH = -7
@@ -75,6 +82,7 @@ class Event:
     uptime: float  # the receiver's uptime, or the capture's wall clock when the capture gives one
     packet_id: str = ""
     sender: str = ""
+    relay: str = ""  # the node that put this copy on the air, as the firmware's relay byte
     length: int = -1
     error: int = 0
     snr: float | None = None
@@ -127,6 +135,10 @@ def read_log(path: str, source: str | None = None) -> list:
             if record.get("kind") == "heartbeat":
                 events.append(Event("heartbeat", source or path, number, float(record["wall"])))
                 continue
+            if record.get("kind") == "stop":
+                # The capture ended here; what the receiver said after this was not kept until a new capture began.
+                events.append(Event("stop", source or path, number, float(record["wall"])))
+                continue
             if record.get("kind") != "line":
                 continue
             read_at, raw = float(record["wall"]), record.get("text", "")
@@ -172,6 +184,8 @@ def read_log(path: str, source: str | None = None) -> list:
             if signal and event.kind in ("accepted", "refused"):
                 event.snr, event.rssi = float(signal.group(1)), int(signal.group(2))
             if event.kind in ("accepted", "refused"):
+                relay = RELAY.search(message)
+                event.relay = norm(relay.group(1)) if relay else ""
                 last_packet = event
         events.append(event)
     return events
@@ -195,8 +209,9 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
     ids = [norm(a["id"]) for a in attempts]
     repeated = {i for i in ids if ids.count(i) > 1}
     # What the receiver wrote vouches for the receiver; the capture's own lines only for the capture.
-    uptimes = sorted(e.uptime for e in events if e.kind != "heartbeat")
+    uptimes = sorted(e.uptime for e in events if e.kind not in ("heartbeat", "stop"))
     beats = sorted(e.uptime for e in events if e.kind == "heartbeat")
+    stops = sorted(e.uptime for e in events if e.kind == "stop")
     sending = own_transmissions(events)
 
     by_id = {}
@@ -204,14 +219,30 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
         if event.kind in ("accepted", "refused"):
             by_id.setdefault(event.packet_id, []).append(event)
 
-    # Line the two clocks up on the frames both sides know, the complete lines only.
+    def own_copy(event, attempt) -> bool:
+        """The line is about the sender's own transmission, not a rebroadcast of it by another node.
+        Only an attempt that says which relay byte it went out with can tell the two apart."""
+        wanted = attempt.get("relay")
+        return not wanted or not event.relay or event.relay == norm(wanted)
+
+    # Line the two clocks up on the frames both sides know, the complete lines only. A packet id
+    # sent more than once (the daemon repeats a packet it heard no rebroadcast of) is used when
+    # the receiver accepted it exactly as often, copy by copy in time order.
     deltas = []
     for attempt in attempts:
         if "t_end" not in attempt or norm(attempt["id"]) in repeated:
             continue
         for event in by_id.get(norm(attempt["id"]), []):
-            if event.sender == norm(attempt["sender"]):
+            if event.sender == norm(attempt["sender"]) and own_copy(event, attempt):
                 deltas.append(float(attempt["t_end"]) - event.uptime)
+    for packet_id in repeated:
+        copies = sorted((a for a in attempts if norm(a["id"]) == packet_id and "t_end" in a), key=lambda a: float(a["t_end"]))
+        heard = sorted(
+            (e for e in by_id.get(packet_id, []) if e.kind == "accepted" and copies and e.sender == norm(copies[0]["sender"]) and own_copy(e, copies[0])),
+            key=lambda e: e.uptime,
+        )
+        if copies and len(copies) == len(heard):
+            deltas.extend(float(a["t_end"]) - e.uptime for a, e in zip(copies, heard))
     shift = statistics.median(deltas) if deltas else None
 
     def window(attempt):
@@ -220,11 +251,30 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
         end = float(attempt["t_end"]) - shift
         return end - float(attempt.get("airtime_ms", 0)) / 1000.0 - tolerance, end + tolerance
 
+    def overlapping(attempt, span) -> bool:
+        """A line with this packet id that could belong to this copy or to another copy of it."""
+        if span is None:
+            return True
+        for other in attempts:
+            if other is attempt or norm(other["id"]) != norm(attempt["id"]):
+                continue
+            theirs = window(other)
+            if theirs is None:
+                return True
+            low, high = max(span[0], theirs[0]), min(span[1], theirs[1])
+            if low <= high and any(low <= e.uptime <= high for e in by_id.get(norm(attempt["id"]), []) if own_copy(e, attempt)):
+                return True
+        return False
+
     def covered(span, times=None) -> bool:
+        """Something was written shortly before and shortly after the frame's time, and the capture
+        was not stopped in between: a gap between a capture's end and the next one's start is no coverage."""
         times = uptimes if times is None else times
-        before = any(span[0] - health <= u <= span[0] for u in times)
-        after = any(span[1] <= u <= span[1] + health for u in times)
-        return before and after
+        before = [u for u in times if span[0] - health <= u <= span[0]]
+        after = [u for u in times if span[1] <= u <= span[1] + health]
+        if not before or not after:
+            return False
+        return not any(max(before) <= s <= min(after) for s in stops)
 
     rows = []
     for attempt in attempts:
@@ -233,11 +283,17 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
         row = dict(attempt)
         row.update(verdict="", reason="", content="not_checked", events=[], error_codes=[], capture="unknown")
         row["identity"] = "id, sender, length" if attempt.get("sender_recorded", True) else "id, length; the sender is the receiver's"
+        if attempt.get("relay"):
+            row["identity"] += ", relay"
 
         def inside(event) -> bool:
             return span is None or span[0] <= event.uptime <= span[1]
 
-        matches = [e for e in by_id.get(packet_id, [])]
+        # A packet sent more than once is judged copy by copy: only the lines in this copy's time.
+        matches = [e for e in by_id.get(packet_id, []) if packet_id not in repeated or inside(e)]
+        # Rebroadcasts of the packet by other nodes are the mesh doing its work, not this frame.
+        relayed = [e for e in matches if not own_copy(e, attempt)]
+        matches = [e for e in matches if own_copy(e, attempt)]
         ours = [e for e in matches if e.kind == "accepted" and e.sender == sender]
         refused = [e for e in matches if e.kind == "refused"]
         strangers = [e for e in matches if e.kind == "accepted" and e.sender != sender]
@@ -254,6 +310,7 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
             else []
         )
         row["events"] = [e.where() for e in ours + refused + strangers + cut]
+        row["relayed"] = [e.where() for e in relayed]
         row["error_codes"] = sorted({e.error for e in refused})
         if span:
             row["capture"] = "covers" if covered(span) else "does_not_cover"
@@ -266,8 +323,8 @@ def judge(attempts: list, events: list, tolerance: float = 4.0, health: float = 
                 row["rx_time_ms"] = event.rx_time_ms
             rows.append(row)
 
-        if packet_id in repeated:
-            settle("ambiguous", "more than one attempt carries this packet id")
+        if packet_id in repeated and overlapping(attempt, span):
+            settle("ambiguous", "a line with this packet id falls in the time of more than one copy of it")
         elif cut:
             settle("ambiguous", "a line about this packet is cut or run into another")
         elif ours and refused:

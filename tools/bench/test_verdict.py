@@ -13,19 +13,20 @@ SENDER = "0x4d530a4a"
 OTHER = "0x27ca8f1c"
 
 
-def ok(uptime, packet_id, length, sender=SENDER, offset=4300.5):
+def ok(uptime, packet_id, length, sender=SENDER, offset=4300.5, relay=None):
+    tail = f" hopStart=3 relay={relay}" if relay else ""
     return [
         f"DEBUG | 16:00:00 {uptime} [RadioIf] Corrected frequency offset: {offset}",
         f"DEBUG | 16:00:00 {uptime} [RadioIf] Lora RX (id={packet_id} fr={sender} to=0xffffffff, transport = 0, "
-        f"WantAck=0, HopLim=0 Ch=0x5a encrypted len={length} rxSNR=6.5 rxRSSI=-58)",
+        f"WantAck=0, HopLim=0 Ch=0x5a encrypted len={length} rxSNR=6.5 rxRSSI=-58{tail})",
         f"DEBUG | 16:00:00 {uptime} [RadioIf] Packet RX: 477ms",
     ]
 
 
-def refused(uptime, packet_id, error=-7, sender=SENDER):
+def refused(uptime, packet_id, error=-7, sender=SENDER, relay="0x4a"):
     return [
         f"ERROR | 16:00:00 {uptime} [RadioIf] Ignore received packet due to error={error} (maybe id={packet_id} "
-        f"fr={sender} to=0xffffffff flags=0x00 rxSNR=5.25 rxRSSI=-59 nextHop=0x0 relay=0x4a)",
+        f"fr={sender} to=0xffffffff flags=0x00 rxSNR=5.25 rxRSSI=-59 nextHop=0x0 relay={relay})",
         f"DEBUG | 16:00:00 {uptime} [RadioIf] Packet RX (noise?) : 805ms",
     ]
 
@@ -104,12 +105,56 @@ class Verdicts(unittest.TestCase):
         )
         self.assertEqual(rows["b"]["verdict"], "ambiguous")
 
-    def test_an_id_used_twice_gives_no_verdict(self):
+    def test_a_capture_stopped_and_started_again_does_not_cover_the_gap(self):
+        # The receiver's lines before the stop and after the restart are close enough to look like coverage.
+        before = captured(alive(900, 1000, step=20) + ok(980, "0x11111111", 32), wall=1e9 + 980)
+        stop = [json.dumps({"kind": "stop", "wall": 1e9 + 1001, "mono": 1001})]
+        after = captured(alive(1100, 1200, step=20), wall=1e9 + 1100)
+        rows = self.run_case(before + stop + after, [attempt("a", "0x11111111", 32, 1e9 + 980 + 50000), attempt("b", "0x22222222", 76, 1e9 + 1050 + 50000)])
+        self.assertEqual(rows["a"]["verdict"], "accepted")
+        self.assertEqual(rows["b"]["verdict"], "capture_invalid")
+        self.assertEqual(rows["b"]["reason"], "the capture holds no line around the time the frame was on the air")
+
+    def test_a_packet_sent_again_apart_in_time_is_judged_copy_by_copy(self):
+        # The daemon sends a packet again, same id, when it hears no rebroadcast. Each copy has its own time.
         rows = self.run_case(
             alive(900, 1200) + ok(1000, "0x11111111", 32) + ok(1040, "0x11111111", 32),
             [attempt("a", "0x11111111", 32, 51000), attempt("b", "0x11111111", 32, 51040)],
         )
+        self.assertEqual({rows["a"]["verdict"], rows["b"]["verdict"]}, {"accepted"})
+
+    def test_only_one_copy_heard_of_a_packet_sent_twice(self):
+        rows = self.run_case(
+            alive(900, 1200) + ok(1040, "0x11111111", 32),
+            [attempt("a", "0x11111111", 32, 51000), attempt("b", "0x11111111", 32, 51040)],
+        )
+        # No other frame lines the clocks up, and the copies cannot be paired: no verdict, not a wrong one.
         self.assertEqual({rows["a"]["verdict"], rows["b"]["verdict"]}, {"ambiguous"})
+
+    def test_copies_of_a_packet_in_the_same_time_give_no_verdict(self):
+        rows = self.run_case(
+            alive(900, 1200) + ok(1000, "0x11111111", 32) + ok(1002, "0x11111111", 32),
+            [attempt("a", "0x11111111", 32, 51000), attempt("b", "0x11111111", 32, 51002)],
+        )
+        self.assertEqual({rows["a"]["verdict"], rows["b"]["verdict"]}, {"ambiguous"})
+
+    def test_a_rebroadcast_by_another_node_is_not_the_frame(self):
+        # The sender's copies carry its own relay byte; a neighbour's rebroadcast of the same packet carries the neighbour's.
+        anchor = attempt("z", "0x33333333", 32, 50950)  # a frame of its own lines the clocks up
+        mine = dict(attempt("a", "0x11111111", 32, 51000), relay="0x4a")
+        again = dict(attempt("b", "0x11111111", 32, 51010), relay="0x4a")
+        third = dict(attempt("c", "0x11111111", 32, 51020), relay="0x4a")
+        lines = (
+            alive(900, 1200) + ok(950, "0x33333333", 32)
+            + ok(1000, "0x11111111", 32, relay="0x4a") + ok(1004, "0x11111111", 32, relay="0xa4")
+            + ok(1010, "0x11111111", 32, relay="0x4a") + refused(1014, "0x11111111", relay="0xa4")
+            + ok(1024, "0x11111111", 32, relay="0xa4")
+        )
+        rows = self.run_case(lines, [anchor, mine, again, third])
+        self.assertEqual([rows[k]["verdict"] for k in "abc"], ["accepted", "accepted", "not_observed"])
+        self.assertEqual(rows["a"]["identity"], "id, sender, length, relay")
+        self.assertEqual(len(rows["a"]["relayed"]), 1)
+        self.assertEqual(rows["c"]["reason"], "the capture covers the frame's time and holds no trace of it")
 
     def test_accepted_and_refused_for_one_id_gives_no_verdict(self):
         rows = self.run_case(
