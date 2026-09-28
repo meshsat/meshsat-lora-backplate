@@ -1,10 +1,20 @@
 # /etc/meshtasticd/config.yaml for the phone. The radio itself is in
 # config.d/lora-pinedio-backcover.yaml.
 Logging:
+  # `debug` writes every packet the radio heard (the `Lora RX` lines the bench tools read);
+  # `info` is enough for a node in use.
   LogLevel: info
 
 Webserver:
-  # Port: 9443
+  # Meshtastic's web client, served by the daemon itself: http://localhost:9443/ on the
+  # phone. Plain HTTP: the daemon's own certificate generation fails on Linux (it looks
+  # for /etc/meshtasticd/ssl/certificate.pem and private_key.pem and cannot make them);
+  # with a key and certificate made by `openssl req -x509` in that directory it serves
+  # HTTPS on the same port. The client's files go uncompressed under
+  # /usr/share/meshtasticd/web (the Linux web server serves the path as asked, so the
+  # release's build.tar must be extracted and `gunzip -r`'d, as Debian's package does).
+  # The client is laid out for a desktop screen; the phone app is meshsat-linux.
+  Port: 9443
 
 General:
   MaxNodes: 200
