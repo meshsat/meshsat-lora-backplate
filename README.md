@@ -101,6 +101,7 @@ The ATtiny84 answers at I2C address 0x28. An SPI write to the radio is one I2C w
 - **[MeshSat Bridge](https://github.com/meshsat/meshsat)**, the gateway software that will run on the phone
 - **[meshsat-sx1262-driver-android](https://github.com/meshsat/meshsat-sx1262-driver-android)**, the same back cover under Android, from the MeshSat Android app
 - **Pine64's PineDio**: the [back cover and USB adapter](https://wiki.pine64.org/wiki/Pinedio), and [JF002's driver](https://codeberg.org/JF002/pinedio-lora-driver)
+- **[puurpl's pinephonepro-lora](https://github.com/puurpl/pinephonepro-lora)** (March 2026), the earlier Meshtastic port to this back cover: meshtasticd on a PinePhone Pro under Mobian, through its own RadioLib layer over the ATtiny's I2C bridge. It sent and received with a Heltec V2 two metres away at 915 MHz, and it includes a LoRaWAN tool for Helium. Found after this port was written; the two share no code.
 
 ## Licence
 
