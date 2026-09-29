@@ -279,7 +279,7 @@ The daemon sent every packet three times, ten seconds apart, because it never he
 | B's probe copies, 33 bytes | 44 to 58 | accepted, 3 of 3 |
 | B's own node announcement, 106 bytes | 28.3 | refused, checksum |
 
-After a transmission the receiver refuses long frames for at least 28 s and misses short ones for something between 4.5 and 11 s. The crystal is still moving as the amplifier cools; the same cause as the transmit limit, the same cure. What it costs: three copies for every broadcast, three times the time on air; the ack for a direct message will most likely be missed; neighbours see every text three times and drop the copies as duplicates. Idle for minutes, the same receiver took B's 33-byte frames every time and A's texts at -96 dBm.
+After a transmission the receiver refuses long frames for at least 28 s and misses short ones for something between 4.5 and 11 s. The suspected cause is the same as for the transmit limit, a crystal still moving as the amplifier cools, and the same remedy would apply; neither is established. A receive race in the bridge layer could explain the frames that were not reported at all, though not the ones refused on their checksum (MESHSAT-1438). What it costs: three copies for every broadcast, three times the time on air; the ack for a direct message will most likely be missed; neighbours see every text three times and drop the copies as duplicates. Idle for minutes, the same receiver took B's 33-byte frames every time and A's texts at -96 dBm.
 
 ### Direct messages
 
