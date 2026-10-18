@@ -65,7 +65,7 @@ While the daemon runs, the watchdog only counts: more than three recoveries or t
 
 | Path | What |
 |---|---|
-| `/usr/local/bin/meshtasticd` | the daemon, built from meshsat-firmware `6777ecc`, env `meshsat-pinephone-pro` |
+| `/usr/local/bin/meshtasticd` | the daemon, built from meshsat-firmware `a0c6bda`, env `meshsat-pinephone-pro` |
 | `/etc/meshtasticd/config.yaml`, `config.d/lora-pinedio-backcover.yaml` | the configuration; the cap at 0 dBm lives in the second |
 | `/etc/meshtasticd/ssl/` | a self-signed certificate, since the daemon cannot make its own on Linux |
 | `/var/lib/meshtasticd/.portduino/default/prefs` | the node's keys, channels and node database (user `meshtasticd`, group `i2c`) |
